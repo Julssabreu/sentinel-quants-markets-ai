@@ -1,47 +1,36 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error CommonJS shared production module
-import { buildDailyReportHtml, riskRewardOf, convictionFromGovernance } from '../shared/dailyReportHtml.cjs';
+import { buildDailyReportHtml, previousRegularSessionCloseDate } from '../shared/dailyReportHtml.cjs';
 
 const base = {
   generatedAtIso: '2026-08-22T13:00:00.000Z',
-  candidates: [], deepDive: [], vix: null, macro: null, stockDetails: {},
+  extendedHoursSource: { connected: false, brokerName: null },
+  vix: null, macro: null, catalysts: [], stocks: [],
 };
 
-describe('riskRewardOf', () => {
-  it('calcula R:R desde el plan real', () => {
-    expect(riskRewardOf({ maxEntry: 100, stop: 98, tp1: 104 })).toBeCloseTo(2, 10);
-  });
-  it('devuelve null si el riesgo es cero o negativo, en vez de dividir por cero', () => {
-    expect(riskRewardOf({ maxEntry: 100, stop: 100, tp1: 104 })).toBeNull();
-    expect(riskRewardOf(null)).toBeNull();
-  });
-});
-
-describe('convictionFromGovernance', () => {
-  it('declara RESEARCH sin autorización cuando la muestra es insuficiente', () => {
-    const result = convictionFromGovernance({ maturityStatus: 'RESEARCH', maturitySample: 7 });
-    expect(result.label).toContain('RESEARCH');
-    expect(result.detail).toContain('7/30');
-  });
-  it('reconoce evidencia solo con muestra completa y estado maduro', () => {
-    const result = convictionFromGovernance({ maturityStatus: 'ACTIVE', maturitySample: 30 });
-    expect(result.label).toBe('Con evidencia');
-  });
-});
-
-describe('buildDailyReportHtml', () => {
+describe('buildDailyReportHtml (premercado y posmercado — solo acciones)', () => {
   it('nunca escapa a XSS: un símbolo malicioso no rompe el HTML', () => {
     const html = buildDailyReportHtml({
       ...base,
-      candidates: [{ symbol: '<script>alert(1)</script>', market: 'STOCK', direction: 'BUY', score: 90, description: 'x' }],
+      stocks: [{ symbol: '<script>alert(1)</script>', direction: 'BUY', score: 90, description: 'x' }],
     });
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
   });
 
-  it('declara VIX no disponible en vez de omitir la sección', () => {
+  it('declara explícitamente cuando no hay fuente de horario extendido conectada', () => {
     const html = buildDailyReportHtml(base);
-    expect(html).toContain('VIX:</strong> Dato no disponible');
+    expect(html).toContain('Premercado y after-hours: dato no disponible');
+    expect(html).toContain('TradeStation o Interactive Brokers');
+  });
+
+  it('omite el aviso de horario extendido cuando sí hay fuente conectada', () => {
+    const html = buildDailyReportHtml({ ...base, extendedHoursSource: { connected: true, brokerName: 'TradeStation' } });
+    expect(html).not.toContain('Premercado y after-hours: dato no disponible');
+  });
+
+  it('declara VIX no disponible en vez de omitir la sección', () => {
+    expect(buildDailyReportHtml(base)).toContain('VIX:</strong> Dato no disponible');
   });
 
   it('muestra el nivel de VIX cuando existe', () => {
@@ -49,60 +38,82 @@ describe('buildDailyReportHtml', () => {
     expect(html).toContain('15.01');
   });
 
-  it('un candidato sin registro SMC no inventa niveles', () => {
+  it('lista catalizadores reales de SEC EDGAR con enlace al documento original', () => {
     const html = buildDailyReportHtml({
       ...base,
-      deepDive: [{ candidate: { symbol: 'AAPL.US', market: 'STOCK', direction: 'BUY', score: 91, description: 'Apple' }, record: null }],
-    });
-    expect(html).toContain('Sin análisis SMC guardado hoy');
-    expect(html).not.toContain('R:R');
-  });
-
-  it('un candidato con registro SMC muestra entrada, stop, objetivos y R:R', () => {
-    const html = buildDailyReportHtml({
-      ...base,
-      deepDive: [{
-        candidate: { symbol: 'AAPL.US', market: 'STOCK', direction: 'BUY', score: 91, description: 'Apple' },
-        record: {
-          analyticalDecision: 'BUY_CONDICIONADO', regime: 'ALCISTA', strategy: 'SMC_D1_H4_H1_M15_M5_V1',
-          technicalConfidence: 78, dataQualityScore: 100, maturityStatus: 'RESEARCH', maturitySample: 5,
-          authorizationReasons: ['H4 no alcanza la zona estructural.'],
-          plan: { trigger: 100, maxEntry: 100.5, stop: 98, tp1: 104, tp2: 108 },
-          sources: ['MetaTrader 5 local terminal', 'TradingView / Cloudflare'],
-        },
+      catalysts: [{
+        ticker: 'AAPL', companyName: 'Apple Inc.', error: null,
+        filings: [{ form: '10-Q', filingDate: '2026-07-31', documentUrl: 'https://www.sec.gov/x.htm' }],
       }],
     });
-    expect(html).toContain('BUY_CONDICIONADO');
-    expect(html).toContain('100.5000');
-    expect(html).toContain('98.0000');
-    // riesgo = |100.5-98| = 2.5; recompensa = |104-100.5| = 3.5; R:R = 1.4
-    expect(html).toContain('1.40 : 1');
+    expect(html).toContain('Apple Inc.');
+    expect(html).toContain('10-Q');
+    expect(html).toContain('https://www.sec.gov/x.htm');
   });
 
-  it('separa correctamente el análisis destacado del resto de candidatos', () => {
+  it('un ticker sin presentaciones o con error de EDGAR no aparece en la tabla de catalizadores', () => {
     const html = buildDailyReportHtml({
       ...base,
-      candidates: [
-        { symbol: 'AAPL.US', market: 'STOCK', direction: 'BUY', score: 91, description: 'Apple' },
-        { symbol: 'EUR/USD', market: 'FOREX', direction: 'SELL', score: 70, description: 'Euro' },
+      catalysts: [
+        { ticker: 'ZZZZ', companyName: null, error: 'HTTP 403', filings: [] },
+        { ticker: 'YYYY', companyName: 'Sin filings', error: null, filings: [] },
       ],
-      deepDive: [{ candidate: { symbol: 'AAPL.US', market: 'STOCK', direction: 'BUY', score: 91, description: 'Apple' }, record: null }],
     });
-    // AAPL.US aparece en el análisis destacado, no debe repetirse en la tabla resumen.
-    const summaryTableStart = html.indexOf('Resto de candidatos');
-    expect(html.slice(summaryTableStart)).not.toContain('AAPL.US');
-    expect(html.slice(summaryTableStart)).toContain('EUR/USD');
+    expect(html).toContain('Sin presentaciones recientes');
+    expect(html).not.toContain('ZZZZ');
+    expect(html).not.toContain('YYYY');
   });
 
-  it('siempre declara sus propios límites, incluido que ninguna IA origina el dato', () => {
+  it('nunca inventa consenso de analistas ni datos de premercado', () => {
     const html = buildDailyReportHtml(base);
     expect(html).toContain('consenso de analistas');
     expect(html).toContain('ninguna IA origina un dato');
+  });
+
+  it('el universo de acciones aclara que es sesión regular, no premercado', () => {
+    const html = buildDailyReportHtml({
+      ...base,
+      stocks: [{ symbol: 'AAPL.US', direction: 'BUY', score: 91, description: 'Apple' }],
+    });
+    expect(html).toContain('No es una lectura de premercado');
+    expect(html).toContain('AAPL.US');
+    expect(html).toContain('ALCISTA');
   });
 
   it('convierte el timestamp a AST y a ET', () => {
     const html = buildDailyReportHtml({ ...base, generatedAtIso: '2026-08-22T13:00:00.000Z' });
     expect(html).toMatch(/09:00 AST/);
     expect(html).toMatch(/09:00 ET/);
+  });
+});
+
+describe('previousRegularSessionCloseDate — fin de semana lee el viernes', () => {
+  // El informe corre todos los días del calendario, incluido lunes. "El cierre
+  // regular anterior" el lunes debe ser el del viernes, no el de un domingo que
+  // nunca existió como sesión.
+  it('un martes a viernes, el cierre anterior es el día calendario previo', () => {
+    // Miércoles 2026-08-19 09:00 AST -> martes 2026-08-18
+    expect(previousRegularSessionCloseDate(new Date('2026-08-19T13:00:00.000Z'))).toContain('18 de agosto');
+  });
+
+  it('un lunes, el cierre regular anterior es el viernes, no el domingo', () => {
+    // Lunes 2026-08-24 09:00 AST -> viernes 2026-08-21
+    expect(previousRegularSessionCloseDate(new Date('2026-08-24T13:00:00.000Z'))).toContain('21 de agosto');
+  });
+
+  it('un sábado, el cierre regular anterior sigue siendo el viernes', () => {
+    // Sábado 2026-08-22 09:00 AST -> viernes 2026-08-21
+    expect(previousRegularSessionCloseDate(new Date('2026-08-22T13:00:00.000Z'))).toContain('21 de agosto');
+  });
+
+  it('un domingo, el cierre regular anterior también es el viernes', () => {
+    // Domingo 2026-08-23 09:00 AST -> viernes 2026-08-21
+    expect(previousRegularSessionCloseDate(new Date('2026-08-23T13:00:00.000Z'))).toContain('21 de agosto');
+  });
+
+  it('el informe generado en HTML el lunes menciona el viernes, no el domingo', () => {
+    const html = buildDailyReportHtml({ ...base, generatedAtIso: '2026-08-24T13:00:00.000Z' });
+    expect(html).toContain('21 de agosto');
+    expect(html).not.toContain('23 de agosto');
   });
 });

@@ -45,7 +45,7 @@ Verificado contra el código y contra las fuentes en vivo, no declarado de memor
 | TradeStation | adaptador escrito, **sin OAuth ni cuenta** |
 | Premarket / after-hours | **sin fuente** — el feed MT5 de CFDs no lo trae |
 | Resultados y guías | vía EDGAR (8-K, 10-Q, 10-K) |
-| Informe diario por WhatsApp | **conectado** — 9:00 AST, texto compuesto, sin PDF todavía |
+| Informe diario por WhatsApp | **conectado** — 9:00 AST, premercado/posmercado, solo acciones, PDF + vista previa |
 
 EDGAR exige un `User-Agent` con correo de contacto y admite 10 solicitudes por
 segundo. El contacto es un ajuste editable (`sec:config-get` / `sec:config-save`), no
@@ -175,8 +175,14 @@ código requiere un certificado real; consulta [`docs/WINDOWS_SIGNING.md`](docs/
 - El umbral de frescura de tick para cripto es de **10 segundos**, exigente para un
   feed de CFD; dispara `DATA_FEED_STALE` sin detener el análisis.
 - Componente `NEWS` en estado `DEGRADED`.
-- El informe diario compone **texto**, no PDF; el envío usa OpenClaw (`--media`
-  admite adjuntos, pero todavía no se genera ningún archivo que adjuntar).
+- El informe diario cubre **solo acciones de EE. UU.**, con estructura de
+  premercado/posmercado. **No tiene precios reales de horario extendido**: el feed
+  MT5 es de CFDs y solo entrega sesión regular. Requiere decidir y conectar un
+  bróker de acciones (TradeStation o Interactive Brokers) — pendiente. Mientras
+  tanto, el PDF declara esa sección como no disponible en lugar de aproximarla.
+- No incluye consenso de analistas ni precio objetivo a 12 meses: no es una fuente
+  conectada. Los catalizadores del informe vienen de SEC EDGAR (8-K, 10-Q, 10-K
+  reales, con enlace al documento), no de un resumen de titular.
 - La lógica de VWAP/opening range existe **dos veces a propósito**
   (`src/sessionMetricsCalc.ts` y `shared/sessionMetrics.cjs`): Vite no interopera con
   exportaciones nombradas de un `.cjs` cuando ese archivo llega al bundle del

@@ -17,7 +17,6 @@ const { createEvidenceLedger, stableJson } = require('../shared/evidenceLedger.c
 const { createPersistentLogger } = require('../shared/persistentLog.cjs');
 const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
-const { buildStockSessionMetrics } = require('../shared/stockSessionMetricsFetch.cjs');
 const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
 const { buildDailyReportHtml } = require('../shared/dailyReportHtml.cjs');
 const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
@@ -289,26 +288,12 @@ function inferReportMarket(candidate){
   return'CFD';
 }
 
-async function fetchStockSessionMetrics(ticker,now){
-  const fetchRates=(symbol,timeframe,count)=>runMt5Bridge('rates',['--symbol',symbol,'--timeframe',timeframe,'--count',String(count)]);
-  return buildStockSessionMetrics(fetchRates,ticker,now);
-}
-
-// El registro de análisis más reciente para un símbolo se lee del historial que ya
-// guarda el runtime autónomo; no se vuelve a correr el motor SMC aquí. Duplicar esa
-// decisión en el proceso principal repetiría exactamente el error que esta auditoría
-// lleva todo el día corrigiendo, y además ignoraría la gobernanza ya aplicada.
-async function latestHistoryRecordForSymbol(brokerSymbol){
-  const wanted=String(brokerSymbol||'').trim().toUpperCase();
-  if(!wanted)return null;
-  const records=await readHistory();
-  const matches=records.filter(record=>
-    String(record.brokerSymbol||'').toUpperCase()===wanted || String(record.symbol||'').toUpperCase()===wanted
-  );
-  if(!matches.length)return null;
-  return matches.reduce((latest,record)=>Date.parse(record.createdAt)>Date.parse(latest.createdAt)?record:latest);
-}
-
+// Solo acciones de EE. UU.: el informe dejó de cubrir forex/cripto/CFD a pedido
+// explícito. El feed MT5 es de CFDs y solo entrega sesión regular — sin premercado ni
+// after-hours reales, así que esa franja se declara no disponible en vez de
+// aproximarla. Requiere decidir y conectar un bróker de horario extendido
+// (TradeStation o Interactive Brokers); mientras tanto extendedHoursSource.connected
+// se queda en false.
 async function buildDailyReportAssets(){
   const [scan,macro,vix]=await Promise.all([
     scanMt5Market(300,false),
@@ -316,22 +301,22 @@ async function buildDailyReportAssets(){
     getTradingViewVixContext(false).catch(()=>null),
   ]);
   const rawCandidates=scan?.ok?scan.candidates:[];
-  const candidates=rawCandidates
-    .map(c=>({symbol:c.symbol,market:inferReportMarket(c),direction:c.direction,score:c.score,description:c.description||c.symbol}))
-    .sort((a,b)=>b.score-a.score);
-  const topStocks=candidates.filter(c=>c.market==='STOCK').slice(0,DAILY_REPORT_MAX_STOCK_DETAILS);
-  const stockDetails={},deepDive=[];
-  for(const stock of topStocks){
-    const [edgar,sessionMetrics,record]=await Promise.all([
-      fetchSecCompanySnapshot(stock.symbol).catch(cause=>({ticker:stock.symbol,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)})),
-      fetchStockSessionMetrics(stock.symbol,new Date()).catch(cause=>({vwap:null,openingRange:null,unavailableReason:cause instanceof Error?cause.message:String(cause)})),
-      latestHistoryRecordForSymbol(stock.symbol).catch(()=>null),
-    ]);
-    stockDetails[stock.symbol]={edgar,sessionMetrics};
-    deepDive.push({candidate:stock,record});
-  }
+  const stocks=rawCandidates
+    .filter(c=>inferReportMarket(c)==='STOCK')
+    .map(c=>({symbol:c.symbol,direction:c.direction,score:c.score,description:c.description||c.symbol}))
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,DAILY_REPORT_MAX_CANDIDATES);
+  const catalysts=await Promise.all(
+    stocks.slice(0,DAILY_REPORT_MAX_STOCK_DETAILS).map(stock=>
+      fetchSecCompanySnapshot(stock.symbol).catch(cause=>({ticker:stock.symbol,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)}))
+    )
+  );
   const vixSummary=vix?.ok&&vix.snapshot?{value:vix.snapshot.value,observedAt:vix.snapshot.observedAt,source:'TradingView / Cloudflare'}:null;
-  return{generatedAtIso:new Date().toISOString(),candidates,stockDetails,deepDive,vix:vixSummary,macro};
+  return{
+    generatedAtIso:new Date().toISOString(),
+    extendedHoursSource:{connected:false,brokerName:null},
+    stocks,catalysts,vix:vixSummary,macro,
+  };
 }
 
 // El PDF se renderiza con el Chromium que Electron ya trae incluido: una ventana
@@ -352,7 +337,8 @@ async function renderReportPdf(html){
 
 async function buildDailyReport(){
   const assets=await buildDailyReportAssets();
-  const text=composeDailyReportText({...assets,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
+  const candidates=assets.stocks.map(stock=>({...stock,market:'STOCK'}));
+  const text=composeDailyReportText({generatedAtIso:assets.generatedAtIso,candidates,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
   const html=buildDailyReportHtml(assets);
   const pdfPath=await renderReportPdf(html);
   return{text,pdfPath};
