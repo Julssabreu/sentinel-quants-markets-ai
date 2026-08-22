@@ -1,0 +1,1 @@
+import{describe,expect,it}from'vitest';import{validateChampionRegistry}from'./quantModelRegistry';describe('Quant Model Registry',()=>{it('allows at most one Champion',()=>{const base:any={status:'CHAMPION'};expect(validateChampionRegistry([base,{...base}])).toMatchObject({valid:false,issues:['MULTIPLE_CHAMPIONS']})})});

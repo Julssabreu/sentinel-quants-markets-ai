@@ -1,0 +1,23 @@
+import type{MarketClass}from'./marketArchitecture';import type{ExecutionCostProfile}from'./executionCostModel';
+export type ExecutionModelKind='FOREX'|'EQUITY'|'CRYPTO'|'FUTURE'|'GENERIC';
+export interface MarketExecutionProfile{id:string;kind:ExecutionModelKind;assetClasses:MarketClass[];spreadMode:'ABSOLUTE'|'BPS';spreadValue:number;slippageMode:'ABSOLUTE'|'BPS';slippageValue:number;commissionMode:'ABSOLUTE'|'BPS';commissionValue:number;exchangeFeeBps:number;fundingRatePerPeriod:number;swapLongPricePerDay:number;swapShortPricePerDay:number;latencyMs:number;minimumFillRatio:number;conservativeSameBar:boolean;}
+export interface ExecutionContext{price:number;notional:number;direction:'LONG'|'SHORT';holdingDays:number;fundingPeriods:number;availableLiquidity:number|null;requestedQuantity:number;}
+export interface ResolvedMarketExecution{costProfile:ExecutionCostProfile;fillRatio:number;filledQuantity:number;unfilledQuantity:number;carryCostPrice:number;feeCostPrice:number;totalAdditionalCostPrice:number;reasonCodes:string[];}
+const nonNegative=(value:number,field:string)=>{if(!Number.isFinite(value)||value<0)throw new Error(`${field} inválido.`);return value};
+const priceCost=(mode:'ABSOLUTE'|'BPS',value:number,price:number)=>mode==='BPS'?price*value/10_000:value;
+export function resolveMarketExecution(profile:MarketExecutionProfile,context:ExecutionContext):ResolvedMarketExecution{
+  if(context.price<=0||context.notional<0||context.requestedQuantity<=0)throw new Error('Contexto de ejecución inválido.');
+  const spreadPrice=priceCost(profile.spreadMode,nonNegative(profile.spreadValue,'spread'),context.price),slippagePrice=priceCost(profile.slippageMode,nonNegative(profile.slippageValue,'slippage'),context.price);
+  const commission=profile.commissionMode==='BPS'?context.price*profile.commissionValue/10_000:profile.commissionValue,exchange=context.price*profile.exchangeFeeBps/10_000;
+  const carryCostPrice=(context.direction==='LONG'?profile.swapLongPricePerDay:profile.swapShortPricePerDay)*context.holdingDays+context.price*profile.fundingRatePerPeriod*context.fundingPeriods;
+  const fillRatio=context.availableLiquidity==null?1:Math.max(0,Math.min(1,context.availableLiquidity/context.requestedQuantity)),reasonCodes:string[]=[];if(fillRatio<1)reasonCodes.push('EXECUTION_PARTIAL_FILL');if(fillRatio<profile.minimumFillRatio)reasonCodes.push('EXECUTION_MINIMUM_FILL_NOT_MET');
+  const feeCostPrice=commission+exchange,totalAdditionalCostPrice=feeCostPrice+carryCostPrice;
+  return{costProfile:{id:profile.id,spreadPrice,slippagePrice,commissionRoundTripPrice:feeCostPrice+carryCostPrice,latencyMs:profile.latencyMs,conservativeSameBar:profile.conservativeSameBar},fillRatio,filledQuantity:context.requestedQuantity*fillRatio,unfilledQuantity:context.requestedQuantity*(1-fillRatio),carryCostPrice,feeCostPrice,totalAdditionalCostPrice,reasonCodes};
+}
+export const EXECUTION_PROFILE_TEMPLATES:Record<ExecutionModelKind,MarketExecutionProfile>={
+ FOREX:{id:'FOREX_RESEARCH_V1',kind:'FOREX',assetClasses:['FOREX'],spreadMode:'BPS',spreadValue:1,slippageMode:'BPS',slippageValue:.2,commissionMode:'BPS',commissionValue:.5,exchangeFeeBps:0,fundingRatePerPeriod:0,swapLongPricePerDay:0,swapShortPricePerDay:0,latencyMs:250,minimumFillRatio:.95,conservativeSameBar:true},
+ EQUITY:{id:'EQUITY_RESEARCH_V1',kind:'EQUITY',assetClasses:['STOCK'],spreadMode:'BPS',spreadValue:2,slippageMode:'BPS',slippageValue:1,commissionMode:'BPS',commissionValue:.5,exchangeFeeBps:.2,fundingRatePerPeriod:0,swapLongPricePerDay:0,swapShortPricePerDay:0,latencyMs:350,minimumFillRatio:.9,conservativeSameBar:true},
+ CRYPTO:{id:'CRYPTO_RESEARCH_V1',kind:'CRYPTO',assetClasses:['CRYPTO'],spreadMode:'BPS',spreadValue:3,slippageMode:'BPS',slippageValue:2,commissionMode:'BPS',commissionValue:4,exchangeFeeBps:0,fundingRatePerPeriod:0,swapLongPricePerDay:0,swapShortPricePerDay:0,latencyMs:400,minimumFillRatio:.85,conservativeSameBar:true},
+ FUTURE:{id:'FUTURE_RESEARCH_V1',kind:'FUTURE',assetClasses:['FUTURE'],spreadMode:'ABSOLUTE',spreadValue:0,slippageMode:'ABSOLUTE',slippageValue:0,commissionMode:'ABSOLUTE',commissionValue:0,exchangeFeeBps:0,fundingRatePerPeriod:0,swapLongPricePerDay:0,swapShortPricePerDay:0,latencyMs:300,minimumFillRatio:.9,conservativeSameBar:true},
+ GENERIC:{id:'GENERIC_RESEARCH_V1',kind:'GENERIC',assetClasses:[],spreadMode:'BPS',spreadValue:5,slippageMode:'BPS',slippageValue:3,commissionMode:'BPS',commissionValue:1,exchangeFeeBps:0,fundingRatePerPeriod:0,swapLongPricePerDay:0,swapShortPricePerDay:0,latencyMs:500,minimumFillRatio:1,conservativeSameBar:true},
+};

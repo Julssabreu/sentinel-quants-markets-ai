@@ -1,0 +1,49 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+release/
+archive/
+
+# Local development artifacts
+services/__pycache__/
+services/build/
+*.py[cod]
+*.log
+development-tools/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# Runtime/user data
+analysis-history.json
+sentinel-alerts.json
+evidence-ledger.jsonl
+AtomicMT5_Status.txt
+AtomicMT5_Signals.txt
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Packaged installers y binarios regenerables
+*.exe
+*.msi
+# services/dist/mt5_bridge.exe pesa 19 MB y se regenera con `npm run build:mt5-bridge`.
+# No se versiona: inflaría el historial de forma permanente.
+
+# El EA compilado sí se conserva: son 28 KB y es un insumo del instalador.
+!integrations/mt5/*.ex5
+
+# Datos de usuario y auditorías locales adicionales
+sentinel-*.json
+coverage-probe.txt
+probe.txt
+sec-live-probe.txt

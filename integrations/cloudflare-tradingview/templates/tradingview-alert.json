@@ -1,0 +1,11 @@
+{
+  "secret": "REEMPLAZAR_CON_TRADINGVIEW_WEBHOOK_SECRET",
+  "alert_id": "{{ticker}}-{{interval}}-{{timenow}}-{{strategy.order.action}}",
+  "ticker": "{{ticker}}",
+  "exchange": "{{exchange}}",
+  "timeframe": "{{interval}}",
+  "action": "{{strategy.order.action}}",
+  "price": "{{close}}",
+  "timestamp": "{{timenow}}",
+  "strategy": "REEMPLAZAR_CON_NOMBRE_DE_ESTRATEGIA"
+}

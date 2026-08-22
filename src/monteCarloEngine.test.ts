@@ -1,0 +1,2 @@
+import { describe, expect, it } from 'vitest';import { runMonteCarloBootstrap } from './monteCarloEngine';
+describe('Monte Carlo bootstrap',()=>{it('is reproducible and reports drawdown distribution',()=>{const input={paths:200,pathLength:50,randomSeed:7,ruinThresholdR:10};const a=runMonteCarloBootstrap([2,-1,-1,1],input);expect(a).toEqual(runMonteCarloBootstrap([2,-1,-1,1],input));expect(a.maxDrawdownR.p95).toBeGreaterThanOrEqual(a.maxDrawdownR.p50);expect(a.ruinProbability).toBeGreaterThanOrEqual(0)});});

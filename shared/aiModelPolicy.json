@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "anthropic": {
+      "model": "anthropic/claude-opus-5",
+      "role": "FINAL_EDITORIAL_REVIEW",
+      "automatic": false
+    },
+    "openaiOAuth": {
+      "model": "gpt-5.6-sol",
+      "role": "CODEX_DEVELOPMENT_AND_REVIEW",
+      "automatic": false
+    },
+    "openaiApiKey": {
+      "model": "gpt-5.6-sol",
+      "role": "EXPLICIT_BACKUP_ANALYSIS",
+      "automatic": false
+    },
+    "local": {
+      "model": null,
+      "role": "FUTURE_REALTIME_ANALYSIS",
+      "automatic": false
+    }
+  },
+  "rules": {
+    "continuousExternalCalls": false,
+    "silentPaidFallback": false,
+    "executionAuthority": false,
+    "missingDataPolicy": "DATA_NOT_AVAILABLE"
+  }
+}

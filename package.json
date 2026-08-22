@@ -1,0 +1,105 @@
+{
+  "name": "sentinel-quants",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Centro personal de inteligencia de mercados, análisis y simulación segura",
+  "author": {
+    "name": "Julio César Abreu"
+  },
+  "license": "UNLICENSED",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "start:local": "electron .",
+    "build": "tsc && vite build && vite build --config vite.quant-backend.config.ts",
+    "test": "vitest run",
+    "test:runtime-e2e": "set SENTINEL_MT5_E2E=1&& vitest run src/autonomousRuntime.mt5.e2e.test.ts --reporter=verbose",
+    "test:cloudflare": "npm --prefix integrations/cloudflare-tradingview test && npm --prefix integrations/cloudflare-tradingview run check",
+    "test:all": "npm test && npm run test:cloudflare",
+    "preview": "vite preview",
+    "generate:icon": "node scripts/generate-app-icon.cjs",
+    "build:mt5-bridge": "node scripts/build-mt5-bridge.cjs",
+    "verify:release-inputs": "node scripts/verify-release-inputs.cjs",
+    "dist:local": "npm run verify:release-inputs && npm run build && electron-builder --win --dir",
+    "dist:win": "npm run verify:release-inputs && npm run build && electron-builder --win nsis",
+    "dist:win:signed": "node scripts/require-signing-env.cjs && npm run verify:release-inputs && npm run build && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "concurrently": "10.0.4",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "lucide-react": "1.28.0",
+    "nanoid": "3.3.18",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "3.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.0",
+    "vitest": "4.1.10",
+    "wait-on": "9.1.0"
+  },
+  "build": {
+    "appId": "com.julssbot.sentinelquants",
+    "productName": "SentinelQuants",
+    "artifactName": "SentinelQuants-Setup-${version}.${ext}",
+    "asar": true,
+    "compression": "maximum",
+    "forceCodeSigning": false,
+    "copyright": "Copyright © 2026 Julio César Abreu",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "shared/**/*",
+      "package.json",
+      "!**/*.test.*",
+      "!**/__pycache__/**",
+      "!**/*.pyc",
+      "!**/*.pyo"
+    ],
+    "extraResources": [
+      {
+        "from": "services/dist/mt5_bridge.exe",
+        "to": "services/mt5_bridge.exe"
+      },
+      {
+        "from": "integrations/mt5",
+        "to": "integrations/mt5",
+        "filter": [
+          "SentinelAtomicReader.ex5"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "executableName": "SentinelQuants",
+      "legalTrademarks": "SentinelQuants",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SentinelQuants",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

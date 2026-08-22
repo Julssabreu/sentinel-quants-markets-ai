@@ -1,0 +1,17 @@
+{
+  "modelId": "SENTINEL_CONSENSUS",
+  "version": "0.3.4-research",
+  "features": [
+    "MTF_21",
+    "EVENT_RISK",
+    "NEWS_RISK",
+    "ATOMIC_SECONDARY",
+    "PORTFOLIO_GATE",
+    "VIX_DAILY_CONTEXT_V1",
+    "MULTI_MARKET_ROUTER_V1",
+    "ANALYTICAL_OPERATIONAL_SEPARATION_V1",
+    "SIMULATION_OUTCOME_V2"
+  ],
+  "trainingPolicy": "walk-forward-purged",
+  "execution": "advisory-only"
+}

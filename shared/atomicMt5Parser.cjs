@@ -1,0 +1,5 @@
+function fields(line){const out={};for(const part of String(line).split('|')){const i=part.indexOf('=');if(i>0)out[part.slice(0,i).trim()]=part.slice(i+1).trim()}return out}
+function parseSignal(line){const f=fields(line);if(!f.Type||!f.Symbol||!f.TF)return null;return{id:f.ID||null,type:f.Type.toUpperCase(),symbol:f.Symbol,timeframe:f.TF,time:f.Time||null,value:Number(f.Value),buyBuffer:Number(f.BuyBuffer),sellBuffer:Number(f.SellBuffer),source:f.Source||'Atomic Analyst MT5',raw:line}}
+function parseSignals(text){return String(text).split(/\r?\n/).map(parseSignal).filter(Boolean)}
+function parseStatus(text){const f=fields(String(text).split(/\r?\n/).find(Boolean)||'');if(!f.Symbol)return null;return{symbol:f.Symbol,timeframe:f.TF,bar:f.Bar,buyValue:Number(f.BuyValue),sellValue:Number(f.SellValue),buyCopied:Number(f.BuyCopied),sellCopied:Number(f.SellCopied),updated:f.Updated,mode:f.Mode,buyBuffer:Number(f.BuyBuffer),sellBuffer:Number(f.SellBuffer)}}
+module.exports={parseSignal,parseSignals,parseStatus};

@@ -1,0 +1,2 @@
+import{describe,expect,it}from'vitest';import{ACTIVE_VIEWS,hasView}from'./navigation';
+describe('application navigation',()=>{it('keeps every menu destination registered',()=>{for(const label of ['Centro global','Oportunidades','Analizar activo','Estrategias','Riesgo','Cartera','Noticias y macro','Julssbot AI','Alertas','Listas de vigilancia','Avisos WhatsApp','Historial','Laboratorio'])expect(hasView(label)).toBe(true);expect(new Set(ACTIVE_VIEWS).size).toBe(ACTIVE_VIEWS.length)})});

@@ -1,0 +1,15 @@
+{
+  "secret": "REEMPLAZAR_TRADINGVIEW_WEBHOOK_SECRET",
+  "ticker": "{{ticker}}",
+  "exchange": "{{exchange}}",
+  "timeframe": "{{interval}}",
+  "value": "{{close}}",
+  "open": "{{open}}",
+  "high": "{{high}}",
+  "low": "{{low}}",
+  "close": "{{close}}",
+  "observed_at": "{{time}}",
+  "metadata": {
+    "purpose": "sentinel-volatility-context"
+  }
+}

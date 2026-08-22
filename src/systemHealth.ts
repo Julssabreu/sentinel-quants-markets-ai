@@ -1,0 +1,5 @@
+export type ComponentHealth='HEALTHY'|'DEGRADED'|'OFFLINE'|'NOT_CONFIGURED'|'ERROR';
+export interface ComponentHeartbeat{id:string;status:ComponentHealth;lastMessage:string|null;lastHeartbeat:string|null;latencyMs:number|null;critical:boolean;reasonCodes:string[];}
+export interface SystemHealthSnapshot{timestamp:string;components:ComponentHeartbeat[];overall:ComponentHealth;blockNewOpportunities:boolean;}
+export function evaluateSystemHealth(components:readonly ComponentHeartbeat[],timestamp:string):SystemHealthSnapshot{const criticalFailure=components.some(component=>component.critical&&['OFFLINE','ERROR'].includes(component.status)),degraded=components.some(component=>component.status==='DEGRADED');return{timestamp,components:[...components],overall:criticalFailure?'ERROR':degraded?'DEGRADED':'HEALTHY',blockNewOpportunities:criticalFailure}}
+export function isComponentStale(component:ComponentHeartbeat,now:string,maxAgeMs:number){const last=Date.parse(component.lastMessage??component.lastHeartbeat??'');return!Number.isFinite(last)||Date.parse(now)-last>maxAgeMs}

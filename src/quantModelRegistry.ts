@@ -1,0 +1,4 @@
+import type { SentinelQuantVersions } from './sentinelQuantVersions';
+export type QuantModelRegistryStatus='RESEARCH'|'CHALLENGER'|'VALIDATING'|'PAPER'|'SHADOW'|'CHAMPION'|'DEPRECATED'|'BLOCKED';
+export interface QuantModelRegistryEntry{schemaVersion:1;modelId:string;version:string;type:'SMC'|'FEATURE_SET'|'QUANT'|'RISK'|'EXECUTION'|'AI_CONTEXT';status:QuantModelRegistryStatus;createdAt:string;createdBy:string;experimentIds:string[];validationStatus:Record<string,boolean>;promotionStatus:'NOT_REQUESTED'|'PENDING_APPROVAL'|'APPROVED'|'REJECTED';performanceSummary:Record<string,number|null>;knownLimitations:string[];versions:SentinelQuantVersions;}
+export function validateChampionRegistry(entries:readonly QuantModelRegistryEntry[]){const champions=entries.filter(entry=>entry.status==='CHAMPION');return{valid:champions.length<=1,champion:champions[0]??null,issues:champions.length>1?['MULTIPLE_CHAMPIONS']:[]}}

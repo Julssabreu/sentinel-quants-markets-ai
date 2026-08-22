@@ -1,0 +1,3 @@
+import {describe,expect,it} from 'vitest';import {calculatePositionSize} from './positionSizing';
+const specification={contractSize:100000,tickSize:.00001,tickValue:1,tickValueProfit:1,tickValueLoss:1,volumeMin:.01,volumeMax:100,volumeStep:.01,currencyProfit:'USD',currencyMargin:'EUR'};
+describe('position sizing',()=>{it('respeta riesgo y paso del lote',()=>{const r=calculatePositionSize({balance:1000,riskPercent:1,entry:1.1,stop:1.095,specification});expect(r.valid).toBe(true);expect(r.volume).toBe(.02);expect(r.estimatedLoss).toBeCloseTo(10)});it('rechaza cuando el lote mínimo excede el riesgo',()=>{const r=calculatePositionSize({balance:50,riskPercent:.5,entry:1.1,stop:1.09,specification});expect(r.valid).toBe(false);expect(r.volume).toBe(0)})});

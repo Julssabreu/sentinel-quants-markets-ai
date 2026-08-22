@@ -1,0 +1,56 @@
+//@version=6
+indicator("Sentinel Market Observer v2", "SMO v2", overlay=true)
+
+secret = input.string("", "Secreto del webhook", confirm=true)
+sendClosedBars = input.bool(true, "Enviar cada vela cerrada")
+
+jsonNumber(float value) =>
+    na(value) ? "null" : str.tostring(value)
+
+isVix = syminfo.ticker == "VIX"
+vixTimeframeOk = timeframe.isdaily and timeframe.multiplier == 1
+secretOk = str.length(secret) >= 32
+marketAllowed = not isVix or vixTimeframeOk
+shouldAlert = sendClosedBars and marketAllowed and barstate.isrealtime and barstate.isconfirmed
+
+// No se bloquea silenciosamente por un secreto ausente o incorrecto. TradingView
+// debe registrar el intento; Cloudflare se encarga de autenticarlo y rechazarlo.
+if shouldAlert
+    message = "{" +
+      "\"secret\":\"" + secret + "\"," +
+      "\"event_type\":\"MARKET_OBSERVATION\"," +
+      "\"ticker\":\"" + syminfo.tickerid + "\"," +
+      "\"exchange\":\"" + syminfo.prefix + "\"," +
+      "\"market_type\":\"" + syminfo.type + "\"," +
+      "\"timeframe\":\"" + timeframe.period + "\"," +
+      "\"open\":" + jsonNumber(open) + "," +
+      "\"high\":" + jsonNumber(high) + "," +
+      "\"low\":" + jsonNumber(low) + "," +
+      "\"close\":" + jsonNumber(close) + "," +
+      "\"volume\":" + jsonNumber(volume) + "," +
+      "\"currency\":\"" + syminfo.currency + "\"," +
+      "\"base_currency\":\"" + syminfo.basecurrency + "\"," +
+      "\"observed_at\":" + str.tostring(time_close) + "," +
+      "\"metadata\":{\"purpose\":\"sentinel-market-observation\"}" +
+      "}"
+    alert(message, alert.freq_once_per_bar_close)
+
+plot(close, "Cierre", display=display.none)
+
+var table statusPanel = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 10), frame_color=color.gray, frame_width=1)
+
+if barstate.islast
+    table.cell(statusPanel, 0, 0, "SENTINEL", text_color=color.white, bgcolor=color.rgb(22, 78, 99))
+    table.cell(statusPanel, 1, 0, "SMO v2", text_color=color.white, bgcolor=color.rgb(22, 78, 99))
+    table.cell(statusPanel, 0, 1, "Secreto", text_color=color.silver)
+    table.cell(statusPanel, 1, 1, secretOk ? "CARGADO" : "VACIO/CORTO", text_color=secretOk ? color.lime : color.red)
+    table.cell(statusPanel, 0, 2, "Envio", text_color=color.silver)
+    table.cell(statusPanel, 1, 2, sendClosedBars ? "ACTIVO" : "DESACTIVADO", text_color=sendClosedBars ? color.lime : color.orange)
+    table.cell(statusPanel, 0, 3, "Simbolo", text_color=color.silver)
+    table.cell(statusPanel, 1, 3, syminfo.tickerid, text_color=color.white)
+    table.cell(statusPanel, 0, 4, "Temporalidad", text_color=color.silver)
+    table.cell(statusPanel, 1, 4, timeframe.period, text_color=color.white)
+    table.cell(statusPanel, 0, 5, "Estado", text_color=color.silver)
+    statusText = not marketAllowed ? "VIX REQUIERE 1D" : not secretOk ? "DIAGNOSTICO: SECRETO" : "LISTO; ESPERA CIERRE"
+    statusColor = not marketAllowed ? color.orange : not secretOk ? color.red : color.lime
+    table.cell(statusPanel, 1, 5, statusText, text_color=statusColor)

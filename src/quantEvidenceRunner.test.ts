@@ -1,0 +1,10 @@
+import {describe,expect,it} from 'vitest';
+import {runOosCostRobustness,runOosMonteCarlo,runOosSameRrBenchmark} from './quantEvidenceRunner';
+const records=Array.from({length:20},(_,i)=>({setupId:`S${i}`,sourceTimestamp:new Date(1700000000000+i*300000).toISOString(),entryTimestamp:new Date(1700000000000+i*300000).toISOString(),exitTimestamp:new Date(1700000000000+(i+2)*300000).toISOString(),resultStatus:'COMPLETED',netResultR:i%3?2:-1,plannedRR:2,actualEntry:100,entry:100,stop:99})) as any[];
+const ids=records.map(record=>record.setupId),execution={id:'T',spreadPrice:.01,slippagePrice:.005,commissionRoundTripPrice:0,latencyMs:0,conservativeSameBar:true};
+describe('quantEvidenceRunner',()=>{
+  it('Monte Carlo OOS es determinista',()=>{const a=runOosMonteCarlo(records,ids,{paths:100,randomSeed:7,ruinThresholdR:10});expect(a).toEqual(runOosMonteCarlo(records,ids,{paths:100,randomSeed:7,ruinThresholdR:10}));expect(a.status).toBe('COMPLETED')});
+  it('benchmark conserva muestra y RR',()=>{const candles=Array.from({length:80},(_,i)=>({time:new Date(1700000000000+i*300000).toISOString(),open:100,high:102,low:98,close:101,tickVolume:1,spread:1,realVolume:0}));const result=runOosSameRrBenchmark({records,oosIds:ids,candles,execution,randomSeed:3,fallbackRR:1.5});expect(result.status).toBe('COMPLETED');expect(result.rewardRisk).toBe(2)});
+  it('benchmark reutiliza spread histórico por barra cuando el backtest declara ese modelo',()=>{const candles=Array.from({length:80},(_,i)=>({time:new Date(1700000000000+i*300000).toISOString(),open:100+i,high:102+i,low:98+i,close:101+i,tickVolume:1,spread:i%2?2:1,realVolume:0})),dynamic={...execution,costModel:'PER_BAR_HISTORICAL_SPREAD_OR_BPS',pointSize:.01,spreadBps:1,slippageBps:.5,commissionBps:0};const result=runOosSameRrBenchmark({records,oosIds:ids,candles,execution:dynamic,randomSeed:3,fallbackRR:1.5});expect(result).toMatchObject({status:'COMPLETED',costModel:'PER_BAR_HISTORICAL_SPREAD_OR_BPS'})});
+  it('robustez aumenta costes sin alterar baseline',()=>{const result=runOosCostRobustness(records,ids,execution);expect(result.status).toBe('COMPLETED');expect(result.scenarios).toHaveLength(3) });
+});

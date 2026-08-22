@@ -1,0 +1,16 @@
+name = "sentinel-tradingview-bridge"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# No coloque secretos en este archivo. Configure ambos con `wrangler secret put`:
+# - TRADINGVIEW_WEBHOOK_SECRET
+# - SENTINEL_CONSUMER_TOKEN
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sentinel-alerts"
+database_id = "6692400a-8575-4d10-976b-df82ef9495f0"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 4 * * *"]
