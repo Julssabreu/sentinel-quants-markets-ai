@@ -1,6 +1,14 @@
 /**
  * Métricas de sesión deterministas: VWAP y opening range.
  *
+ * Esta aritmética también vive en `shared/sessionMetrics.cjs`, usada por el informe
+ * diario en `electron/main.cjs`. Están deliberadamente separadas: este módulo corre
+ * en el navegador (bundle del renderer) y Vite no interopera con exportaciones
+ * nombradas de un `.cjs` cuando ese archivo llega al bundle del navegador — ver el
+ * comentario en `sessionMetricsFetch.ts` para el error real que esto produjo.
+ *
+ * Si cambias el cálculo, cambia también `shared/sessionMetrics.cjs`.
+ *
  * Ambas son aritmética sobre velas ya cerradas. No intervienen modelos ni IA: si un
  * LLM "calculara" un VWAP produciría un número plausible y equivocado.
  *

@@ -5,7 +5,8 @@ import { classifyScannerCandidates } from './scannerMarketSelection';
 import { analyzeVixContext } from './vixContext';
 import { selectCompatibleSimulations } from './modelGovernance';
 import { marketMatchesTab, type DailyMarketTab } from './marketNavigation';
-import type { VolumeBasis } from './sessionMetrics';
+/** Declara si el VWAP usa volumen negociado real o un proxy de conteo de ticks. */
+export type VolumeBasis = 'REAL_VOLUME' | 'TICK_VOLUME';
 
 export const DATA_NOT_AVAILABLE = 'Dato no disponible';
 

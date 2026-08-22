@@ -27,6 +27,9 @@ interface Window {
     getSecCompanySnapshot: (ticker: string) => Promise<import('./dailyIntelligence').EdgarSnapshot>;
     getSecEdgarConfig: () => Promise<{ok:boolean;config:{schemaVersion:number;contact:string}}>;
     saveSecEdgarConfig: (value: {contact: string}) => Promise<{ok:boolean;config:{schemaVersion:number;contact:string}}>;
+    getDailyReportConfig: () => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean};schedule:{stopped:boolean;running:boolean;lastRunAt:number|null;lastError:string|null;nextRunAt:number|null;utcHour:number;utcMinute:number}|null}>;
+    saveDailyReportConfig: (value: {enabled: boolean}) => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean}}>;
+    sendDailyReportNow: () => Promise<{ok:boolean;charCount:number}>;
     getEvidenceLedgerStatus: () => Promise<{ok:boolean;entries:number;brokenAt:number|null;lastHash:string;sizeBytes:number;recovered:boolean;retentionPolicy:{activeMaxBytes:number;archiveCompression:'gzip';archiveDeletion:false}}>;
     repairEvidenceLedger: () => Promise<{ok:boolean;repaired:boolean;entries:number;lastHash:string}>;
     listQuantDatasets: () => Promise<{ok:boolean;datasets:QuantDatasetSummary[]}>;

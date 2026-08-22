@@ -17,6 +17,9 @@ const { createEvidenceLedger, stableJson } = require('../shared/evidenceLedger.c
 const { createPersistentLogger } = require('../shared/persistentLog.cjs');
 const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
+const { buildStockSessionMetrics } = require('../shared/stockSessionMetricsFetch.cjs');
+const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
+const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
 const { canonicalSignalFingerprint, sameSignalIdentity, parseLegacyRetryIdentity } = require('../shared/signalIdentity.cjs');
 const { runTrustedQuantBacktest, runTrustedQuantStage, runTrustedParameterStability, validateTrustedQuantPreparation } = require('../shared/quantBackendRunner.cjs');
 const { upsertAlertCandidates } = require('../shared/alertStorePolicy.cjs');
@@ -219,9 +222,10 @@ async function secEdgar(){
 }
 ipcMain.handle('sec:config-get',async()=>({ok:true,config:await readSecEdgarConfig()}));
 ipcMain.handle('sec:config-save',async(_event,value)=>({ok:true,config:await writeSecEdgarConfig(value)}));
-ipcMain.handle('sec:company-snapshot',async(_event,ticker)=>{
-  // El renderer envía el símbolo del bróker (AAPL.US, BRK.B); la traducción al ticker
-  // de la SEC ocurre aquí, en un único punto.
+// El renderer envía el símbolo del bróker (AAPL.US, BRK.B); la traducción al ticker de
+// la SEC ocurre aquí, en un único punto. Extraída como función nombrada porque tanto el
+// handler IPC como el informe diario programado necesitan el mismo snapshot.
+async function fetchSecCompanySnapshot(ticker){
   const raw=String(ticker||'').trim().toUpperCase();
   const symbol=normalizeSecTicker(raw);
   const empty={ticker:symbol||raw,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:null};
@@ -242,6 +246,91 @@ ipcMain.handle('sec:company-snapshot',async(_event,ticker)=>{
   };
   await appendLedger('SEC_EDGAR_SNAPSHOT',{ticker:symbol,cik:company.data.cik,filings:snapshot.filings.length,hasRevenue:Boolean(snapshot.latestRevenue)});
   return snapshot;
+}
+ipcMain.handle('sec:company-snapshot',async(_event,ticker)=>fetchSecCompanySnapshot(ticker));
+
+// Informe diario: escáner + EDGAR + VWAP/opening range compuestos en texto y enviados
+// por WhatsApp a las 9:00 AST. República Dominicana no observa horario de verano, así
+// que la hora objetivo es siempre 13:00 UTC — ver shared/dailyClockScheduler.cjs.
+const DAILY_REPORT_UTC_HOUR=13,DAILY_REPORT_UTC_MINUTE=0,DAILY_REPORT_MAX_CANDIDATES=5,DAILY_REPORT_MAX_STOCK_DETAILS=3;
+function dailyReportConfigPath(){return path.join(app.getPath('userData'),'sentinel-daily-report.json')}
+const defaultDailyReportConfig={schemaVersion:1,enabled:false};
+function normalizeDailyReportConfig(value={}){return{schemaVersion:1,enabled:value.enabled===true}}
+let dailyReportConfigCache=null;
+async function readDailyReportConfig(){
+  if(dailyReportConfigCache)return dailyReportConfigCache;
+  try{dailyReportConfigCache=normalizeDailyReportConfig(JSON.parse(await fs.readFile(dailyReportConfigPath(),'utf8')))}
+  catch(error){if(error.code!=='ENOENT')throw error;dailyReportConfigCache={...defaultDailyReportConfig}}
+  return dailyReportConfigCache;
+}
+async function writeDailyReportConfig(value){
+  const normalized=normalizeDailyReportConfig(value),target=dailyReportConfigPath(),temporary=`${target}.${randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(target),{recursive:true});
+  await fs.writeFile(temporary,JSON.stringify(normalized,null,2),'utf8');
+  await fs.rename(temporary,target);
+  dailyReportConfigCache=normalized;
+  if(dailyReportScheduler)normalized.enabled?dailyReportScheduler.start():dailyReportScheduler.stop();
+  return normalized;
+}
+
+// Heurística de visualización, no un reemplazo de classifyMarket: solo decide qué
+// candidatos reciben EDGAR y sesión de mercado. Si un símbolo se clasifica distinto
+// aquí que en el resto de Sentinel, el peor caso es que no se le pidan datos extra —
+// nunca un dato equivocado.
+function inferReportMarket(candidate){
+  const path=String(candidate.path||'').toLowerCase();
+  if(path.includes('stock'))return'STOCK';
+  if(path.includes('forex')||path.includes('currenc'))return'FOREX';
+  if(path.includes('crypto'))return'CRYPTO';
+  if(path.includes('metal'))return'METAL';
+  if(path.includes('index')||path.includes('indices'))return'INDEX';
+  if(path.includes('future'))return'FUTURE';
+  return'CFD';
+}
+
+async function fetchStockSessionMetrics(ticker,now){
+  const fetchRates=(symbol,timeframe,count)=>runMt5Bridge('rates',['--symbol',symbol,'--timeframe',timeframe,'--count',String(count)]);
+  return buildStockSessionMetrics(fetchRates,ticker,now);
+}
+
+async function buildDailyReport(){
+  const scan=await scanMt5Market(300,false);
+  const rawCandidates=scan?.ok?scan.candidates:[];
+  const candidates=rawCandidates
+    .map(c=>({symbol:c.symbol,market:inferReportMarket(c),direction:c.direction,score:c.score,description:c.description||c.symbol}))
+    .sort((a,b)=>b.score-a.score);
+  const topStocks=candidates.filter(c=>c.market==='STOCK').slice(0,DAILY_REPORT_MAX_STOCK_DETAILS);
+  const stockDetails={};
+  for(const stock of topStocks){
+    const [edgar,sessionMetrics]=await Promise.all([
+      fetchSecCompanySnapshot(stock.symbol).catch(cause=>({ticker:stock.symbol,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)})),
+      fetchStockSessionMetrics(stock.symbol,new Date()).catch(cause=>({vwap:null,openingRange:null,unavailableReason:cause instanceof Error?cause.message:String(cause)})),
+    ]);
+    stockDetails[stock.symbol]={edgar,sessionMetrics};
+  }
+  return composeDailyReportText({generatedAtIso:new Date().toISOString(),candidates,stockDetails,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
+}
+
+async function sendDailyReport(){
+  const [notifier,report]=[await readSignalNotifier(),await readDailyReportConfig()];
+  if(!report.enabled)return{status:'DISABLED'};
+  if(!/^\+[1-9]\d{7,14}$/.test(notifier.target))throw new Error('No hay destino de WhatsApp configurado para el informe diario.');
+  const text=await buildDailyReport();
+  await sendOpenClawMessage(notifier,text);
+  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*')});
+  return{status:'SENT',charCount:text.length};
+}
+
+let dailyReportScheduler=null,dailyReportSchedulerState=null;
+ipcMain.handle('daily-report:get',async()=>({ok:true,config:await readDailyReportConfig(),schedule:dailyReportSchedulerState}));
+ipcMain.handle('daily-report:save',async(_event,value)=>({ok:true,config:await writeDailyReportConfig(value)}));
+ipcMain.handle('daily-report:send-now',async()=>{
+  const [notifier]=[await readSignalNotifier()];
+  if(!/^\+[1-9]\d{7,14}$/.test(notifier.target))throw new Error('Destino WhatsApp inválido.');
+  const text=await buildDailyReport();
+  await sendOpenClawMessage(notifier,text);
+  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*'),reason:'MANUAL'});
+  return{ok:true,charCount:text.length};
 });
 
 function decodeXml(value='') {
@@ -1009,6 +1098,8 @@ app.whenReady().then(async() => {
   operationalHealthScheduler=createOperationalHealthScheduler({task:()=>refreshOperationalHealth(),intervalMs:15*60_000,startupDelayMs:30_000,minimumGapMs:5*60_000,maximumBackoffMs:4*60*60_000,initialState:collectorCheckpoint,onState:state=>collectorStore.saveCollectorState(state)});
   operationalHealthScheduler.start();
   powerMonitor.on('resume',()=>{void operationalHealthScheduler?.resume()});
+  dailyReportScheduler=createDailyClockScheduler({task:()=>sendDailyReport(),utcHour:DAILY_REPORT_UTC_HOUR,utcMinute:DAILY_REPORT_UTC_MINUTE,onState:state=>{dailyReportSchedulerState=state}});
+  if((await readDailyReportConfig()).enabled)dailyReportScheduler.start();
   const icon=nativeImage.createFromPath(process.execPath).resize({width:16,height:16});tray=new Tray(icon);tray.setToolTip('SentinelQuants · vigilancia activa');tray.setContextMenu(Menu.buildFromTemplate([{label:'Abrir Sentinel',click:()=>{const win=BrowserWindow.getAllWindows()[0];if(win){win.show();win.focus()}else createWindow()}},{label:'Salir',click:()=>{quitting=true;app.quit()}}]));tray.on('double-click',()=>{const win=BrowserWindow.getAllWindows()[0];win?.show()});
   app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow());
 });

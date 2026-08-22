@@ -1,11 +1,23 @@
 /**
  * Orquesta VWAP y opening range para la acción en foco a partir de velas MT5.
  *
- * `sessionMetrics.ts` calcula; este módulo decide *cuándo* es legítimo calcular y
- * *qué* velas pedir, separado de React para poder probarlo con un `getMt5Rates` falso.
+ * Esta lógica también existe en `shared/stockSessionMetricsFetch.cjs`, usada por el
+ * informe diario en `electron/main.cjs`. NO se comparte un solo archivo a propósito:
+ * este módulo se ejecuta en el navegador (parte del bundle del renderer, alcanzable
+ * desde `useDailyIntelligence.ts`), y Vite no logra interoperar de forma fiable con
+ * exportaciones nombradas de un `.cjs` cuando ese archivo llega al bundle del
+ * navegador — se comprobó en vivo: `SyntaxError: the requested module ... does not
+ * provide an export named 'OPENING_RANGE_MINUTES'` al intentar importar el `.cjs`
+ * compartido desde aquí. El resto del día, `shared/*.cjs` se compartió sin problema
+ * porque solo lo consumían `electron/main.cjs` (Node real) y los tests de Vitest
+ * (Node vía vite-node) — nunca el bundle que corre en el navegador.
+ *
+ * Si tocas la ventana de sesión, el ORB o la elección de base de volumen, cambia
+ * TAMBIÉN `shared/stockSessionMetricsFetch.cjs` — están sincronizadas por disciplina,
+ * no por importación.
  */
 import { getMarketSessionContext } from './marketSessionContext';
-import { calculateOpeningRange, calculateVwap } from './sessionMetrics';
+import { calculateOpeningRange, calculateVwap, type VolumeBasis as CalcVolumeBasis } from './sessionMetricsCalc';
 import type { SessionMetricsSnapshot } from './dailyIntelligence';
 
 /**
@@ -57,7 +69,7 @@ export async function buildStockSessionMetrics(
       : 'Datos insuficientes para VWAP u opening range en lo que va de la sesión.';
 
   return {
-    vwap: vwap.ok ? { value: vwap.data.value, basis: vwap.data.basis, anchorTime: vwap.data.anchorTime } : null,
+    vwap: vwap.ok ? { value: vwap.data.value, basis: vwap.data.basis as CalcVolumeBasis, anchorTime: vwap.data.anchorTime } : null,
     openingRange: openingRange.ok
       ? { high: openingRange.data.high, low: openingRange.data.low, breakout: openingRange.data.breakout }
       : null,

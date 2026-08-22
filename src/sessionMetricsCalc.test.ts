@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from './analysisEngine';
-import { calculateOpeningRange, calculateVwap, resolveVolumeBasis } from './sessionMetrics';
+import { calculateOpeningRange, calculateVwap, resolveVolumeBasis } from './sessionMetricsCalc';
 
 function bar(minute: number, open: number, high: number, low: number, close: number, extra: Partial<Candle> = {}): Candle {
   return {

@@ -45,7 +45,7 @@ Verificado contra el código y contra las fuentes en vivo, no declarado de memor
 | TradeStation | adaptador escrito, **sin OAuth ni cuenta** |
 | Premarket / after-hours | **sin fuente** — el feed MT5 de CFDs no lo trae |
 | Resultados y guías | vía EDGAR (8-K, 10-Q, 10-K) |
-| PDF automático | pendiente |
+| Informe diario por WhatsApp | **conectado** — 9:00 AST, texto compuesto, sin PDF todavía |
 
 EDGAR exige un `User-Agent` con correo de contacto y admite 10 solicitudes por
 segundo. El contacto es un ajuste editable (`sec:config-get` / `sec:config-save`), no
@@ -151,7 +151,7 @@ npm run test:cloudflare
 npm run build
 ```
 
-Estado medido: `tsc --noEmit` limpio, **541 pruebas** en verde, build de producción
+Estado medido: `tsc --noEmit` limpio, **575 pruebas** en verde, build de producción
 correcta.
 
 ## Instalador
@@ -175,6 +175,12 @@ código requiere un certificado real; consulta [`docs/WINDOWS_SIGNING.md`](docs/
 - El umbral de frescura de tick para cripto es de **10 segundos**, exigente para un
   feed de CFD; dispara `DATA_FEED_STALE` sin detener el análisis.
 - Componente `NEWS` en estado `DEGRADED`.
+- El informe diario compone **texto**, no PDF; el envío usa OpenClaw (`--media`
+  admite adjuntos, pero todavía no se genera ningún archivo que adjuntar).
+- La lógica de VWAP/opening range existe **dos veces a propósito**
+  (`src/sessionMetricsCalc.ts` y `shared/sessionMetrics.cjs`): Vite no interopera con
+  exportaciones nombradas de un `.cjs` cuando ese archivo llega al bundle del
+  navegador. Si se toca el cálculo, hay que tocar ambas — están documentadas entre sí.
 
 ## Auditorías
 

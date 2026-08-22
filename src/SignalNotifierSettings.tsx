@@ -8,12 +8,16 @@ const fallback: SignalNotifierConfig = {
 const fallbackTradingView: TradingViewCloudflareConfig = {
   schemaVersion:1, enabled:false, endpoint:'', pollSeconds:10, maxAgeMinutes:30, hasToken:false,
 };
+const fallbackDailyReport: { schemaVersion: number; enabled: boolean } = { schemaVersion:1, enabled:false };
 type TradingViewMonitorStatus = {state:string;checkedAt:string;processed:number;error:string|null};
 
 export default function SignalNotifierSettings() {
   const [config, setConfig] = useState(fallback);
   const [tradingView, setTradingView] = useState(fallbackTradingView);
   const [consumerToken, setConsumerToken] = useState('');
+  const [dailyReport, setDailyReport] = useState(fallbackDailyReport);
+  const [dailyReportSchedule, setDailyReportSchedule] = useState<Awaited<ReturnType<NonNullable<typeof window.sentinel>['getDailyReportConfig']>>['schedule']>(null);
+  const [dailyReportMessage, setDailyReportMessage] = useState('');
   const [message, setMessage] = useState('');
   const [monitorStatus, setMonitorStatus] = useState<TradingViewMonitorStatus | null>(() => {
     try { return JSON.parse(localStorage.getItem('sentinel-tradingview-monitor-status') || 'null'); } catch { return null; }
@@ -24,9 +28,12 @@ export default function SignalNotifierSettings() {
     void Promise.all([
       window.sentinel.getSignalNotifier(),
       window.sentinel.getTradingViewConfig(),
-    ]).then(([notifier, cloudflare]) => {
+      window.sentinel.getDailyReportConfig(),
+    ]).then(([notifier, cloudflare, report]) => {
       setConfig(notifier.config);
       setTradingView(cloudflare.config);
+      setDailyReport(report.config);
+      setDailyReportSchedule(report.schedule);
     });
   }, []);
   useEffect(() => {
@@ -92,6 +99,35 @@ export default function SignalNotifierSettings() {
     }
   };
 
+  const saveDailyReport = async () => {
+    if (!window.sentinel) return;
+    if (dailyReport.enabled && !config.target.trim()) {
+      setDailyReportMessage('Configura primero el destino de WhatsApp arriba: el informe reutiliza ese mismo número.');
+      return;
+    }
+    setDailyReportMessage('Guardando...');
+    try {
+      const saved = await window.sentinel.saveDailyReportConfig(dailyReport);
+      setDailyReport(saved.config);
+      const refreshed = await window.sentinel.getDailyReportConfig();
+      setDailyReportSchedule(refreshed.schedule);
+      setDailyReportMessage('Guardado. El informe se compone con datos verificables; ninguna IA los origina.');
+    } catch (error) {
+      setDailyReportMessage(error instanceof Error ? error.message : 'No se pudo guardar.');
+    }
+  };
+
+  const sendDailyReportNow = async () => {
+    if (!window.sentinel) return;
+    setDailyReportMessage('Componiendo y enviando...');
+    try {
+      const result = await window.sentinel.sendDailyReportNow();
+      setDailyReportMessage(`Enviado por WhatsApp (${result.charCount} caracteres).`);
+    } catch (error) {
+      setDailyReportMessage(error instanceof Error ? error.message : 'No se pudo enviar el informe.');
+    }
+  };
+
   const clearCloudflareToken = async () => {
     if (!window.sentinel) return;
     try {
@@ -143,6 +179,27 @@ export default function SignalNotifierSettings() {
       </div>
       {monitorStatus?<p className={`monitor-status ${monitorStatus.state.toLowerCase()}`}>Monitor: {monitorStatus.state} · {new Date(monitorStatus.checkedAt).toLocaleString('es-DO')} · procesadas {monitorStatus.processed}{monitorStatus.error?` · ${monitorStatus.error}`:''}</p>:null}
       <p className="signal-note">D1 conserva alertas si la PC está apagada. El sondeo no usa IA; una alerta fresca se recalcula con MT5, 21 temporalidades, riesgo, macro y Atomic. Claude Opus 5 solo se consulta si esos controles la aprueban.</p>
+    </section>
+
+    <section className="card signal-notifier daily-report">
+      <h2>Informe diario · 9:00 AST</h2>
+      <label><input type="checkbox" checked={dailyReport.enabled} onChange={e=>setDailyReport(x=>({...x,enabled:e.target.checked}))}/> Enviar informe diario por WhatsApp</label>
+      <p className="signal-note">
+        Reúne el escáner MT5, SEC EDGAR y VWAP/opening range del día en un texto y lo
+        envía al mismo destino de WhatsApp configurado arriba, a las 9:00 hora de
+        Santo Domingo (AST, sin horario de verano). Es composición determinista: no
+        interviene ninguna IA, y un dato ausente se declara, nunca se inventa.
+      </p>
+      {dailyReportSchedule?<p className="monitor-status">
+        {dailyReportSchedule.stopped?'Programador detenido.':dailyReportSchedule.running?'Componiendo ahora…':dailyReportSchedule.nextRunAt?`Próximo envío: ${new Date(dailyReportSchedule.nextRunAt).toLocaleString('es-DO',{timeZone:'America/Santo_Domingo'})}`:'Programado.'}
+        {dailyReportSchedule.lastRunAt?` · último intento ${new Date(dailyReportSchedule.lastRunAt).toLocaleString('es-DO',{timeZone:'America/Santo_Domingo'})}`:''}
+        {dailyReportSchedule.lastError?` · error: ${dailyReportSchedule.lastError}`:''}
+      </p>:null}
+      <div className="signal-notifier-actions">
+        <button onClick={saveDailyReport}>Guardar informe diario</button>
+        <button onClick={sendDailyReportNow}>Enviar ahora</button>
+        <span>{dailyReportMessage}</span>
+      </div>
     </section>
 
     <div className="signal-notifier-actions settings-save"><button className="primary" onClick={save}>Guardar todo</button><span>{message}</span></div>
