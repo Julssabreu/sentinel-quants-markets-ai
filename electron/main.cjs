@@ -19,6 +19,7 @@ const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
 const { buildStockSessionMetrics } = require('../shared/stockSessionMetricsFetch.cjs');
 const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
+const { buildDailyReportHtml } = require('../shared/dailyReportHtml.cjs');
 const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
 const { canonicalSignalFingerprint, sameSignalIdentity, parseLegacyRetryIdentity } = require('../shared/signalIdentity.cjs');
 const { runTrustedQuantBacktest, runTrustedQuantStage, runTrustedParameterStability, validateTrustedQuantPreparation } = require('../shared/quantBackendRunner.cjs');
@@ -293,31 +294,77 @@ async function fetchStockSessionMetrics(ticker,now){
   return buildStockSessionMetrics(fetchRates,ticker,now);
 }
 
-async function buildDailyReport(){
-  const scan=await scanMt5Market(300,false);
+// El registro de análisis más reciente para un símbolo se lee del historial que ya
+// guarda el runtime autónomo; no se vuelve a correr el motor SMC aquí. Duplicar esa
+// decisión en el proceso principal repetiría exactamente el error que esta auditoría
+// lleva todo el día corrigiendo, y además ignoraría la gobernanza ya aplicada.
+async function latestHistoryRecordForSymbol(brokerSymbol){
+  const wanted=String(brokerSymbol||'').trim().toUpperCase();
+  if(!wanted)return null;
+  const records=await readHistory();
+  const matches=records.filter(record=>
+    String(record.brokerSymbol||'').toUpperCase()===wanted || String(record.symbol||'').toUpperCase()===wanted
+  );
+  if(!matches.length)return null;
+  return matches.reduce((latest,record)=>Date.parse(record.createdAt)>Date.parse(latest.createdAt)?record:latest);
+}
+
+async function buildDailyReportAssets(){
+  const [scan,macro,vix]=await Promise.all([
+    scanMt5Market(300,false),
+    loadMacroSnapshot().catch(()=>null),
+    getTradingViewVixContext(false).catch(()=>null),
+  ]);
   const rawCandidates=scan?.ok?scan.candidates:[];
   const candidates=rawCandidates
     .map(c=>({symbol:c.symbol,market:inferReportMarket(c),direction:c.direction,score:c.score,description:c.description||c.symbol}))
     .sort((a,b)=>b.score-a.score);
   const topStocks=candidates.filter(c=>c.market==='STOCK').slice(0,DAILY_REPORT_MAX_STOCK_DETAILS);
-  const stockDetails={};
+  const stockDetails={},deepDive=[];
   for(const stock of topStocks){
-    const [edgar,sessionMetrics]=await Promise.all([
+    const [edgar,sessionMetrics,record]=await Promise.all([
       fetchSecCompanySnapshot(stock.symbol).catch(cause=>({ticker:stock.symbol,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)})),
       fetchStockSessionMetrics(stock.symbol,new Date()).catch(cause=>({vwap:null,openingRange:null,unavailableReason:cause instanceof Error?cause.message:String(cause)})),
+      latestHistoryRecordForSymbol(stock.symbol).catch(()=>null),
     ]);
     stockDetails[stock.symbol]={edgar,sessionMetrics};
+    deepDive.push({candidate:stock,record});
   }
-  return composeDailyReportText({generatedAtIso:new Date().toISOString(),candidates,stockDetails,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
+  const vixSummary=vix?.ok&&vix.snapshot?{value:vix.snapshot.value,observedAt:vix.snapshot.observedAt,source:'TradingView / Cloudflare'}:null;
+  return{generatedAtIso:new Date().toISOString(),candidates,stockDetails,deepDive,vix:vixSummary,macro};
+}
+
+// El PDF se renderiza con el Chromium que Electron ya trae incluido: una ventana
+// oculta carga el HTML y `printToPDF` lo captura. No se añade ninguna dependencia
+// nueva (nada de puppeteer) solo para generar un documento una vez al día.
+async function renderReportPdf(html){
+  const win=new BrowserWindow({show:false,webPreferences:{offscreen:true}});
+  try{
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const buffer=await win.webContents.printToPDF({printBackground:true,pageSize:'Letter'});
+    const target=path.join(app.getPath('temp'),`sentinel-informe-diario-${new Date().toISOString().replace(/[:.]/g,'-')}.pdf`);
+    await fs.writeFile(target,buffer);
+    return target;
+  }finally{
+    win.destroy();
+  }
+}
+
+async function buildDailyReport(){
+  const assets=await buildDailyReportAssets();
+  const text=composeDailyReportText({...assets,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
+  const html=buildDailyReportHtml(assets);
+  const pdfPath=await renderReportPdf(html);
+  return{text,pdfPath};
 }
 
 async function sendDailyReport(){
   const [notifier,report]=[await readSignalNotifier(),await readDailyReportConfig()];
   if(!report.enabled)return{status:'DISABLED'};
   if(!/^\+[1-9]\d{7,14}$/.test(notifier.target))throw new Error('No hay destino de WhatsApp configurado para el informe diario.');
-  const text=await buildDailyReport();
-  await sendOpenClawMessage(notifier,text);
-  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*')});
+  const{text,pdfPath}=await buildDailyReport();
+  await sendOpenClawMessage(notifier,text,false,{mediaPath:pdfPath});
+  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*'),hasPdf:true});
   return{status:'SENT',charCount:text.length};
 }
 
@@ -327,9 +374,9 @@ ipcMain.handle('daily-report:save',async(_event,value)=>({ok:true,config:await w
 ipcMain.handle('daily-report:send-now',async()=>{
   const [notifier]=[await readSignalNotifier()];
   if(!/^\+[1-9]\d{7,14}$/.test(notifier.target))throw new Error('Destino WhatsApp inválido.');
-  const text=await buildDailyReport();
-  await sendOpenClawMessage(notifier,text);
-  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*'),reason:'MANUAL'});
+  const{text,pdfPath}=await buildDailyReport();
+  await sendOpenClawMessage(notifier,text,false,{mediaPath:pdfPath});
+  await appendLedger('DAILY_REPORT_SENT',{charCount:text.length,target:notifier.target.replace(/\d(?=\d{4})/g,'*'),reason:'MANUAL',hasPdf:true});
   return{ok:true,charCount:text.length};
 });
 
@@ -582,7 +629,11 @@ async function testTradingViewConnection(){const remote=await tradingViewRequest
 async function pullTradingViewSignals(limit=10){const config=await readTradingViewConfig();if(!config.enabled)return{ok:true,status:'DISABLED',signals:[],checkedAt:new Date().toISOString()};return tradingViewRequest('/api/v1/signals/claim',{method:'POST',body:JSON.stringify({limit:Math.max(1,Math.min(25,Number(limit)||10))})})}
 async function acknowledgeTradingViewSignal(id,outcome={}){if(!id)throw new Error('Identificador TradingView invalido.');if(!['PROCESSED','EXPIRED','REJECTED','RETRY'].includes(outcome.status))throw new Error('Estado ACK TradingView invalido.');if(!/^[a-f0-9-]{36}$/i.test(String(outcome.leaseToken||'')))throw new Error('Reserva TradingView invalida.');return tradingViewRequest(`/api/v1/signals/${encodeURIComponent(String(id))}/ack`,{method:'POST',body:JSON.stringify({status:outcome.status,leaseToken:outcome.leaseToken,retryAfterSeconds:Math.max(10,Math.min(3600,Number(outcome.retryAfterSeconds)||60)),verdict:String(outcome.verdict||'').slice(0,60),detail:String(outcome.detail||'').slice(0,300)})})}
 function openclawCli(){return{node:path.join(process.env.ProgramFiles||'C:\\Program Files','nodejs','node.exe'),entry:path.join(process.env.APPDATA||'','npm','node_modules','openclaw','openclaw.mjs')}}
-function sendOpenClawMessage(config,message,dryRun=false){return new Promise((resolve,reject)=>{const cli=openclawCli(),args=[cli.entry,'message','send','--channel',config.channel,'--target',config.target,'--message',message,'--json'];if(dryRun)args.push('--dry-run');const child=spawn(cli.node,args,{windowsHide:true,timeout:30000,shell:false});let stdout='',stderr='';child.stdout.on('data',x=>stdout+=x);child.stderr.on('data',x=>stderr+=x);child.on('error',reject);child.on('close',code=>code===0?resolve(stdout.trim()):reject(new Error(stderr.trim()||`OpenClaw terminó con código ${code}`)))})}
+function sendOpenClawMessage(config,message,dryRun=false,options={}){return new Promise((resolve,reject)=>{const cli=openclawCli(),args=[cli.entry,'message','send','--channel',config.channel,'--target',config.target,'--message',message,'--json'];if(options.mediaPath){args.push('--media',options.mediaPath);if(options.forceDocument!==false)args.push('--force-document')}if(dryRun)args.push('--dry-run');
+  // El PDF de un informe diario tarda más que un aviso de texto en subirse; 30 s bastaba
+  // para un mensaje corto pero mataba el envío de un adjunto antes de terminar.
+  const timeoutMs=options.mediaPath?90000:30000;
+  const child=spawn(cli.node,args,{windowsHide:true,timeout:timeoutMs,shell:false});let stdout='',stderr='';child.stdout.on('data',x=>stdout+=x);child.stderr.on('data',x=>stderr+=x);child.on('error',reject);child.on('close',code=>code===0?resolve(stdout.trim()):reject(new Error(stderr.trim()||`OpenClaw terminó con código ${code}`)))})}
 ipcMain.handle('signal-notifier:get',async()=>({ok:true,config:await readSignalNotifier()}));
 ipcMain.handle('signal-notifier:save',async(_event,value)=>({ok:true,config:await writeSignalNotifier(value)}));
 ipcMain.handle('signal-notifier:test',async()=>{const config=await readSignalNotifier();if(!/^\+[1-9]\d{7,14}$/.test(config.target))throw new Error('Destino WhatsApp inválido.');await sendOpenClawMessage(config,'✅ Sentinel quedó conectado. Las señales válidas se enviarán por este canal sin usar IA ni consumir tokens.');return{ok:true}});

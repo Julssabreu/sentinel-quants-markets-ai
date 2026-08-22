@@ -1,16 +1,16 @@
 'use strict';
 /**
- * Compone el texto del informe diario. Función pura: recibe datos ya obtenidos
- * (escáner, EDGAR, VWAP/opening range) y devuelve el mensaje en español para
- * WhatsApp. No hace red, no consulta IA, no decide qué activo mirar — eso lo resuelve
- * quien llama, en electron/main.cjs.
+ * Compone el texto corto que acompaña al PDF del informe diario por WhatsApp.
+ * Función pura: recibe datos ya obtenidos y devuelve el mensaje en español. No hace
+ * red, no consulta IA, no decide qué activo mirar — eso lo resuelve quien llama, en
+ * electron/main.cjs.
  *
- * La IA redacta, nunca origina el dato: este compositor es la mitad determinista.
- * Si en el futuro se añade una capa de redacción con Claude, debe recibir este mismo
- * texto como evidencia y no reemplazar ningún número.
+ * El detalle completo (niveles, VWAP, EDGAR, análisis por símbolo) vive en el PDF
+ * adjunto (shared/dailyReportHtml.cjs); este texto es solo la vista previa que cabe
+ * legible en una notificación de WhatsApp.
  */
 
-const DAILY_REPORT_COMPOSER_VERSION = '1.0.0';
+const DAILY_REPORT_COMPOSER_VERSION = '2.0.0';
 
 function formatDirection(direction) {
   if (direction === 'BUY') return 'COMPRA';
@@ -18,31 +18,10 @@ function formatDirection(direction) {
   return 'SIN SESGO';
 }
 
-function formatVwapLine(vwap) {
-  if (!vwap) return null;
-  const basis = vwap.basis === 'REAL_VOLUME' ? 'volumen real' : 'proxy de ticks — no institucional';
-  return `   VWAP: ${vwap.value.toFixed(4)} (${basis})`;
-}
-
-function formatOpeningRangeLine(openingRange) {
-  if (!openingRange) return null;
-  const breakout = openingRange.breakout === 'ABOVE' ? 'ruptura al alza confirmada'
-    : openingRange.breakout === 'BELOW' ? 'ruptura a la baja confirmada'
-    : 'sin ruptura confirmada';
-  return `   Rango de apertura: ${openingRange.low.toFixed(4)}–${openingRange.high.toFixed(4)} (${breakout})`;
-}
-
-function formatEdgarLine(edgar) {
-  if (!edgar || edgar.error || !edgar.filings.length) return null;
-  const latest = edgar.filings[0];
-  return `   SEC EDGAR: ${edgar.filings.length} presentaciones recientes; última ${latest.form} (${latest.filingDate}).`;
-}
-
 /**
  * @param {object} input
  * @param {string} input.generatedAtIso
  * @param {Array<{symbol:string, market:string, direction:string, score:number, description:string}>} input.candidates
- * @param {Record<string, {edgar: object|null, sessionMetrics: object|null}>} input.stockDetails - keyed por symbol
  * @param {number} [input.maxCandidates]
  */
 function composeDailyReportText(input) {
@@ -57,23 +36,17 @@ function composeDailyReportText(input) {
   const lines = [`📊 *Informe Sentinel* — ${dateLabel} ${timeLabel} AST`, ''];
 
   const candidates = input.candidates ?? [];
-  const maxCandidates = input.maxCandidates ?? 5;
+  const maxCandidates = input.maxCandidates ?? 3;
   const shown = candidates.slice(0, maxCandidates);
 
   if (!shown.length) {
     lines.push('El escáner no encontró candidatos verificables en este ciclo.');
   } else {
-    lines.push(`Candidatos del escáner (${shown.length} de ${candidates.length}):`);
+    lines.push(`Vista previa (${shown.length} de ${candidates.length} candidatos verificables):`);
     shown.forEach((candidate, index) => {
-      lines.push(`${index + 1}. ${candidate.symbol} (${candidate.market}) ${formatDirection(candidate.direction)} · score ${candidate.score} — ${candidate.description}`);
-      const detail = input.stockDetails?.[candidate.symbol];
-      if (detail) {
-        const vwapLine = formatVwapLine(detail.sessionMetrics?.vwap);
-        const rangeLine = formatOpeningRangeLine(detail.sessionMetrics?.openingRange);
-        const edgarLine = formatEdgarLine(detail.edgar);
-        [vwapLine, rangeLine, edgarLine].filter(Boolean).forEach(line => lines.push(line));
-      }
+      lines.push(`${index + 1}. ${candidate.symbol} (${candidate.market}) ${formatDirection(candidate.direction)} · score ${candidate.score}`);
     });
+    lines.push('', 'Niveles, VWAP, SEC EDGAR y el resto del escáner van en el PDF adjunto.');
   }
 
   lines.push('', 'Sentinel observa, compara y documenta; no ejecuta. La decisión final es tuya.');
