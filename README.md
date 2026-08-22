@@ -41,7 +41,7 @@ Verificado contra el código y contra las fuentes en vivo, no declarado de memor
 | Macro y noticias públicas | conectado |
 | WhatsApp vía OpenClaw | conectado, admite adjuntos (`--media`) |
 | Anthropic | conectado, solo revisión editorial final |
-| VWAP y opening range | **calculados, aún sin poblar** en el flujo real |
+| VWAP y opening range | **conectados** — velas M1 de MT5, solo en sesión regular |
 | TradeStation | adaptador escrito, **sin OAuth ni cuenta** |
 | Premarket / after-hours | **sin fuente** — el feed MT5 de CFDs no lo trae |
 | Resultados y guías | vía EDGAR (8-K, 10-Q, 10-K) |
@@ -169,8 +169,9 @@ código requiere un certificado real; consulta [`docs/WINDOWS_SIGNING.md`](docs/
 - **47 módulos huérfanos**: escritos y probados, sin ejecutarse en la aplicación.
 - **Dos pares duplicados** sin resolver: `dataQualityEngine` / `marketDataQuality` y
   campeón / aspirante SMC.
-- `sessionMetrics` (VWAP y opening range) se calcula y se consume, pero **nadie lo
-  alimenta** todavía.
+- VWAP y opening range solo se calculan durante la **sesión regular de EE. UU.**;
+  fuera de esa franja se declaran no disponibles en lugar de reconstruir la apertura
+  a ciegas. En símbolos sin volumen real el VWAP se marca como proxy de ticks.
 - El umbral de frescura de tick para cripto es de **10 segundos**, exigente para un
   feed de CFD; dispara `DATA_FEED_STALE` sin detener el análisis.
 - Componente `NEWS` en estado `DEGRADED`.

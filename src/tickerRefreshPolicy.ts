@@ -1,5 +1,5 @@
 /**
- * Cuándo volver a pedir el snapshot de EDGAR.
+ * Cuándo volver a consultar un dato asociado a la acción en foco.
  *
  * La primera versión de este guardia recordaba el último ticker consultado y no
  * caducaba nunca: un 8-K presentado más tarde el mismo día no aparecía hasta reiniciar
@@ -7,22 +7,27 @@
  * un fallo funcional, no una optimización pendiente.
  *
  * Vive fuera del hook a propósito: así la decisión es una función pura verificable,
- * en vez de lógica enterrada en un efecto de React.
+ * en vez de lógica enterrada en un efecto de React. Cada consumidor aporta su propio
+ * TTL porque no todos los datos envejecen igual — un filing de EDGAR aguanta minutos,
+ * un VWAP cambia con cada vela.
  */
 
-/** Un 8-K presentado a las 10:00 debe estar visible hacia las 10:15. */
+/** EDGAR: un 8-K presentado a las 10:00 debe estar visible hacia las 10:15. */
 export const EDGAR_REFRESH_TTL_MS = 15 * 60 * 1000;
 
-export interface EdgarRequestState {
+/** VWAP y opening range se mueven con cada vela M1. */
+export const SESSION_METRICS_REFRESH_TTL_MS = 2 * 60 * 1000;
+
+export interface TickerRequestState {
   ticker: string;
   requestedAt: number;
 }
 
-export function shouldRequestEdgar(
-  previous: EdgarRequestState | null,
+export function shouldRequestForTicker(
+  previous: TickerRequestState | null,
   ticker: string | null,
   now: number,
-  ttlMs: number = EDGAR_REFRESH_TTL_MS,
+  ttlMs: number,
 ): boolean {
   if (!ticker) return false;
   if (!previous || previous.ticker !== ticker) return true;

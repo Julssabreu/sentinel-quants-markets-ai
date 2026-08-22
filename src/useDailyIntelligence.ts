@@ -5,7 +5,8 @@ import {
   type DailyIntelligenceModel,
 } from './dailyIntelligence';
 import type { DailyMarketTab } from './marketNavigation';
-import { shouldRequestEdgar, type EdgarRequestState } from './edgarRefreshPolicy';
+import { EDGAR_REFRESH_TTL_MS, SESSION_METRICS_REFRESH_TTL_MS, shouldRequestForTicker, type TickerRequestState } from './tickerRefreshPolicy';
+import { buildStockSessionMetrics } from './sessionMetricsFetch';
 
 const EMPTY_INPUT: DailyIntelligenceInput = {
   market:null,
@@ -138,7 +139,7 @@ export function useDailyIntelligence(selectedMarket: DailyMarketTab): DailyIntel
     () => model.candidates.find(candidate => candidate.market === 'STOCK')?.symbol ?? null,
     [model.candidates],
   );
-  const edgarRequested = useRef<EdgarRequestState | null>(null);
+  const edgarRequested = useRef<TickerRequestState | null>(null);
   /**
    * Pulso de un minuto: sin él la caducidad de EDGAR no serviría de nada, porque el
    * efecto solo se reevalúa cuando cambia la acción en foco.
@@ -152,7 +153,7 @@ export function useDailyIntelligence(selectedMarket: DailyMarketTab): DailyIntel
   useEffect(() => {
     const api = window.sentinel;
     if (!api?.getSecCompanySnapshot || !focusTicker) return;
-    if (!shouldRequestEdgar(edgarRequested.current, focusTicker, Date.now())) return;
+    if (!shouldRequestForTicker(edgarRequested.current, focusTicker, Date.now(), EDGAR_REFRESH_TTL_MS)) return;
     edgarRequested.current = { ticker:focusTicker, requestedAt:Date.now() };
     let cancelled = false;
     void (async () => {
@@ -165,6 +166,28 @@ export function useDailyIntelligence(selectedMarket: DailyMarketTab): DailyIntel
         setErrors((previous) => [
           ...previous.filter((message) => !message.startsWith('SEC EDGAR:')),
           failureMessage('SEC EDGAR', cause),
+        ]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [focusTicker, refreshTick]);
+
+  const sessionMetricsRequested = useRef<TickerRequestState | null>(null);
+  useEffect(() => {
+    const api = window.sentinel;
+    if (!api?.getMt5Rates || !focusTicker) return;
+    if (!shouldRequestForTicker(sessionMetricsRequested.current, focusTicker, Date.now(), SESSION_METRICS_REFRESH_TTL_MS)) return;
+    sessionMetricsRequested.current = { ticker:focusTicker, requestedAt:Date.now() };
+    let cancelled = false;
+    void (async () => {
+      try {
+        const sessionMetrics = await buildStockSessionMetrics(api.getMt5Rates, focusTicker, new Date());
+        if (!cancelled) setInput((previous) => ({ ...previous, sessionMetrics }));
+      } catch (cause) {
+        if (cancelled) return;
+        setErrors((previous) => [
+          ...previous.filter((message) => !message.startsWith('VWAP/opening range:')),
+          failureMessage('VWAP/opening range', cause),
         ]);
       }
     })();
