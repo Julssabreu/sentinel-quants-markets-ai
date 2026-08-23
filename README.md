@@ -42,8 +42,8 @@ Verificado contra el código y contra las fuentes en vivo, no declarado de memor
 | WhatsApp vía OpenClaw | conectado, admite adjuntos (`--media`) |
 | Anthropic | conectado, solo revisión editorial final |
 | VWAP y opening range | **conectados** — velas M1 de MT5, solo en sesión regular |
-| TradeStation | adaptador escrito, **sin OAuth ni cuenta** |
-| Premarket / after-hours | **sin fuente** — el feed MT5 de CFDs no lo trae |
+| TradeStation | descartado — su API exige cuenta fondeada con US$10.000 |
+| Premarket / after-hours | **conectado** vía Massive (antes Polygon.io) — verificado en vivo |
 | Resultados y guías | vía EDGAR (8-K, 10-Q, 10-K) |
 | Informe diario por WhatsApp | **conectado** — 9:00 AST, premercado/posmercado, solo acciones, PDF + vista previa |
 
@@ -151,7 +151,7 @@ npm run test:cloudflare
 npm run build
 ```
 
-Estado medido: `tsc --noEmit` limpio, **575 pruebas** en verde, build de producción
+Estado medido: `tsc --noEmit` limpio, **616 pruebas** en verde, build de producción
 correcta.
 
 ## Instalador
@@ -176,10 +176,14 @@ código requiere un certificado real; consulta [`docs/WINDOWS_SIGNING.md`](docs/
   feed de CFD; dispara `DATA_FEED_STALE` sin detener el análisis.
 - Componente `NEWS` en estado `DEGRADED`.
 - El informe diario cubre **solo acciones de EE. UU.**, con estructura de
-  premercado/posmercado. **No tiene precios reales de horario extendido**: el feed
-  MT5 es de CFDs y solo entrega sesión regular. Requiere decidir y conectar un
-  bróker de acciones (TradeStation o Interactive Brokers) — pendiente. Mientras
-  tanto, el PDF declara esa sección como no disponible en lugar de aproximarla.
+  premercado/posmercado. Los datos de horario extendido llegan con hasta **15 minutos
+  de retraso** (plan gratuito de Massive): suficiente para resumir lo ocurrido, no
+  para ejecutar en vivo. Si Massive no está configurado, el PDF declara esa sección
+  como no disponible en lugar de aproximarla con datos de sesión regular.
+- **TradeStation quedó descartado como fuente de datos**: su API individual exige una
+  cuenta fondeada con US$10.000 mínimo, inviable de financiar desde República
+  Dominicana por costos de transferencia e impuestos. El adaptador de solo lectura
+  (`src/tradeStationAdapter.ts`) se conserva por si esa vía se reabre.
 - No incluye consenso de analistas ni precio objetivo a 12 meses: no es una fuente
   conectada. Los catalizadores del informe vienen de SEC EDGAR (8-K, 10-Q, 10-K
   reales, con enlace al documento), no de un resumen de titular.

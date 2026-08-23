@@ -9,6 +9,7 @@ const fallbackTradingView: TradingViewCloudflareConfig = {
   schemaVersion:1, enabled:false, endpoint:'', pollSeconds:10, maxAgeMinutes:30, hasToken:false,
 };
 const fallbackDailyReport: { schemaVersion: number; enabled: boolean } = { schemaVersion:1, enabled:false };
+const fallbackMassive: { schemaVersion: number; enabled: boolean; hasApiKey: boolean } = { schemaVersion:1, enabled:false, hasApiKey:false };
 type TradingViewMonitorStatus = {state:string;checkedAt:string;processed:number;error:string|null};
 
 export default function SignalNotifierSettings() {
@@ -18,6 +19,9 @@ export default function SignalNotifierSettings() {
   const [dailyReport, setDailyReport] = useState(fallbackDailyReport);
   const [dailyReportSchedule, setDailyReportSchedule] = useState<Awaited<ReturnType<NonNullable<typeof window.sentinel>['getDailyReportConfig']>>['schedule']>(null);
   const [dailyReportMessage, setDailyReportMessage] = useState('');
+  const [massive, setMassive] = useState(fallbackMassive);
+  const [massiveApiKey, setMassiveApiKey] = useState('');
+  const [massiveMessage, setMassiveMessage] = useState('');
   const [message, setMessage] = useState('');
   const [monitorStatus, setMonitorStatus] = useState<TradingViewMonitorStatus | null>(() => {
     try { return JSON.parse(localStorage.getItem('sentinel-tradingview-monitor-status') || 'null'); } catch { return null; }
@@ -29,11 +33,13 @@ export default function SignalNotifierSettings() {
       window.sentinel.getSignalNotifier(),
       window.sentinel.getTradingViewConfig(),
       window.sentinel.getDailyReportConfig(),
-    ]).then(([notifier, cloudflare, report]) => {
+      window.sentinel.getMassiveConfig(),
+    ]).then(([notifier, cloudflare, report, massiveConfig]) => {
       setConfig(notifier.config);
       setTradingView(cloudflare.config);
       setDailyReport(report.config);
       setDailyReportSchedule(report.schedule);
+      setMassive(massiveConfig.config);
     });
   }, []);
   useEffect(() => {
@@ -96,6 +102,45 @@ export default function SignalNotifierSettings() {
         setTradingView(disabled.config);
       } catch { setTradingView(x=>({...x,enabled:false})); }
       setMessage(`${error instanceof Error ? error.message : 'No fue posible conectar con Cloudflare.'} La recepción quedó desactivada.`);
+    }
+  };
+
+  const saveMassive = async () => {
+    if (!window.sentinel) return;
+    setMassiveMessage('Guardando...');
+    try {
+      const saved = await window.sentinel.saveMassiveConfig({
+        enabled: massive.enabled,
+        apiKey: massiveApiKey.trim() || undefined,
+      });
+      setMassive(saved.config);
+      setMassiveApiKey('');
+      setMassiveMessage('Guardado. La clave queda cifrada con el almacenamiento seguro de Windows.');
+    } catch (error) {
+      setMassiveMessage(error instanceof Error ? error.message : 'No se pudo guardar.');
+    }
+  };
+
+  const testMassive = async () => {
+    if (!window.sentinel) return;
+    setMassiveMessage('Consultando Massive...');
+    try {
+      const result = await window.sentinel.testMassive();
+      setMassiveMessage(`Massive respondió: ${result.ticker} · cierre ${result.previousClose ?? '—'} · ${result.premarketBars} barras de premercado, ${result.afterHoursBars} de after-hours.`);
+    } catch (error) {
+      setMassiveMessage(error instanceof Error ? error.message : 'No se pudo consultar Massive.');
+    }
+  };
+
+  const clearMassiveKey = async () => {
+    if (!window.sentinel) return;
+    try {
+      const saved = await window.sentinel.saveMassiveConfig({ enabled: false, clearApiKey: true });
+      setMassive(saved.config);
+      setMassiveApiKey('');
+      setMassiveMessage('Clave eliminada y Massive desactivado.');
+    } catch (error) {
+      setMassiveMessage(error instanceof Error ? error.message : 'No se pudo eliminar la clave.');
     }
   };
 
@@ -179,6 +224,26 @@ export default function SignalNotifierSettings() {
       </div>
       {monitorStatus?<p className={`monitor-status ${monitorStatus.state.toLowerCase()}`}>Monitor: {monitorStatus.state} · {new Date(monitorStatus.checkedAt).toLocaleString('es-DO')} · procesadas {monitorStatus.processed}{monitorStatus.error?` · ${monitorStatus.error}`:''}</p>:null}
       <p className="signal-note">D1 conserva alertas si la PC está apagada. El sondeo no usa IA; una alerta fresca se recalcula con MT5, 21 temporalidades, riesgo, macro y Atomic. Claude Opus 5 solo se consulta si esos controles la aprueban.</p>
+    </section>
+
+    <section className="card signal-notifier massive-source">
+      <h2>Massive · premercado y after-hours</h2>
+      <label><input type="checkbox" checked={massive.enabled} onChange={e=>setMassive(x=>({...x,enabled:e.target.checked}))}/> Activar datos de horario extendido</label>
+      <div className="signal-notifier-grid">
+        <label className="wide-field">Clave de API<input type="password" autoComplete="new-password" value={massiveApiKey} onChange={e=>setMassiveApiKey(e.target.value)} placeholder={massive.hasApiKey?'Cifrada en Windows · escribe solo para reemplazar':'Pegar clave de massive.com'}/></label>
+      </div>
+      <p className="signal-note">
+        Cubre el hueco que MT5 no puede llenar: su feed es de CFDs y solo entrega
+        sesión regular. El plan gratuito de Massive basta para el informe diario —
+        los datos llegan con hasta 15 minutos de retraso, suficiente para resumir lo
+        ocurrido, no para ejecutar en vivo.
+      </p>
+      <div className="signal-notifier-actions">
+        <button onClick={saveMassive}>Guardar Massive</button>
+        <button onClick={testMassive}>Probar conexión</button>
+        {massive.hasApiKey?<button onClick={clearMassiveKey}>Eliminar clave</button>:null}
+        <span>{massiveMessage}</span>
+      </div>
     </section>
 
     <section className="card signal-notifier daily-report">

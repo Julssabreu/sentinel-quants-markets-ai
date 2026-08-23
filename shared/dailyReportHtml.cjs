@@ -57,6 +57,34 @@ function directionLabel(direction) {
   return 'SIN SESGO';
 }
 
+function pct(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
+function renderExtendedHoursRow(item, window) {
+  const data = item[window];
+  if (!data) return null;
+  const cls = Number.isFinite(data.changePercent) ? (data.changePercent >= 0 ? 'up' : 'down') : '';
+  return `<tr>
+    <td>${esc(item.ticker)}</td>
+    <td>${Number.isFinite(item.previousClose) ? item.previousClose.toFixed(2) : '—'}</td>
+    <td>${Number.isFinite(data.last) ? data.last.toFixed(2) : '—'}</td>
+    <td class="${cls}">${pct(data.changePercent)}</td>
+    <td>${Number.isFinite(data.low) ? data.low.toFixed(2) : '—'} – ${Number.isFinite(data.high) ? data.high.toFixed(2) : '—'}</td>
+    <td>${esc(data.bars)}</td>
+  </tr>`;
+}
+
+function renderExtendedHoursTable(items, window, emptyLabel) {
+  const rows = (items ?? []).map(item => renderExtendedHoursRow(item, window)).filter(Boolean).join('\n');
+  if (!rows) return `<p>${esc(emptyLabel)}</p>`;
+  return `<table>
+    <tr><th>Ticker</th><th>Cierre regular</th><th>Último</th><th>Var.</th><th>Rango</th><th>Barras</th></tr>
+    ${rows}
+  </table>`;
+}
+
 function renderCatalystRow(item) {
   const latest = item.filings?.[0];
   return `<tr>
@@ -113,11 +141,19 @@ function buildDailyReportHtml(data) {
     ? ''
     : `<div class="warning">
         <strong>Premercado y after-hours: dato no disponible.</strong>
-        Sentinel no tiene todavía una fuente de horario extendido conectada — el feed
-        MT5 de CFDs no lo trae. Requiere decidir y conectar un bróker de acciones
-        (TradeStation o Interactive Brokers). Este informe no aproxima esos precios
-        con datos de sesión regular.
+        No hay una fuente de horario extendido conectada — el feed MT5 de CFDs solo
+        entrega sesión regular. Actívala en Avisos automáticos configurando Massive.
+        ${extended.error ? `<br>Detalle: ${esc(extended.error)}` : ''}
+        Este informe no aproxima esos precios con datos de sesión regular.
       </div>`;
+
+  const extendedHoursSections = extended.connected
+    ? `<h2>Posmercado del ${esc(data.previousSessionDate || 'día anterior')}</h2>
+       ${renderExtendedHoursTable(data.extendedHours, 'afterHours', 'Sin operaciones registradas en after-hours para el universo observado.')}
+
+       <h2>Premercado del ${esc(data.currentSessionDate || 'día actual')}</h2>
+       ${renderExtendedHoursTable(data.extendedHours, 'premarket', 'Sin operaciones registradas en premercado para el universo observado.')}`
+    : '';
 
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Informe Sentinel — Premercado y posmercado</title><style>
     body{font-family:Arial,Helvetica,sans-serif;color:#1a2433;font-size:12px;margin:32px;}
@@ -130,6 +166,8 @@ function buildDailyReportHtml(data) {
     .warning{background:#fef3c7;border:1px solid #d97706;border-radius:4px;padding:10px 14px;margin:14px 0;color:#78350f;}
     .footer{margin-top:28px;font-size:10px;color:#64748b;border-top:1px solid #cbd5e1;padding-top:8px;}
     .limits{font-size:10.5px;color:#475569;}
+    .up{color:#166534;font-weight:bold;}
+    .down{color:#991b1b;font-weight:bold;}
     a{color:#0b3d63;}
   </style></head><body>
     <h1>Análisis de premercado y posmercado — Acciones de EE. UU.</h1>
@@ -139,6 +177,8 @@ function buildDailyReportHtml(data) {
     </div>
 
     ${extendedHoursBanner}
+
+    ${extendedHoursSections}
 
     <h2>Contexto de volatilidad</h2>
     ${vixSection}
@@ -164,7 +204,9 @@ function buildDailyReportHtml(data) {
     <h2>Límites conocidos de este informe</h2>
     <p class="limits">
       No incluye consenso de analistas ni precio objetivo a 12 meses: no es una fuente conectada.
-      No incluye precios ni movimientos de premercado o after-hours: sin bróker de horario extendido conectado (ver aviso arriba).
+      ${extended.connected
+        ? 'Los datos de horario extendido llegan con hasta 15 minutos de retraso (plan gratuito de Massive): suficiente para resumir lo ocurrido, no para ejecutar en vivo.'
+        : 'No incluye precios ni movimientos de premercado o after-hours: sin fuente de horario extendido conectada (ver aviso arriba).'}
       Este documento se compone de forma determinista a partir de datos verificables; ninguna IA origina un dato.
     </p>
 

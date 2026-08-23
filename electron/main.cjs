@@ -17,6 +17,7 @@ const { createEvidenceLedger, stableJson } = require('../shared/evidenceLedger.c
 const { createPersistentLogger } = require('../shared/persistentLog.cjs');
 const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
+const { createMassiveClient, lastTwoSessionDates } = require('../shared/massiveClient.cjs');
 const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
 const { buildDailyReportHtml } = require('../shared/dailyReportHtml.cjs');
 const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
@@ -209,6 +210,58 @@ async function writeSecEdgarConfig(value){
   secEdgarConfigCache=normalized;secEdgarClientInstance=null;secEdgarClientContact='';
   return normalized;
 }
+// Massive (antes Polygon.io): datos de acciones de EE. UU. con horario extendido, el
+// hueco que MT5 no cubre porque su feed es de CFDs y solo trae sesión regular.
+// La clave se cifra con el almacenamiento seguro de Windows, igual que el token de
+// TradingView, y nunca se devuelve al renderer — solo se informa si existe o no.
+function massiveConfigPath(){return path.join(app.getPath('userData'),'sentinel-massive.json')}
+const defaultMassiveConfig={schemaVersion:1,enabled:false,apiKeyEncrypted:''};
+function publicMassiveConfig(value){return{schemaVersion:1,enabled:value.enabled===true,hasApiKey:Boolean(value.apiKeyEncrypted)}}
+let massiveConfigCache=null;
+async function readMassiveConfig(){
+  if(massiveConfigCache)return massiveConfigCache;
+  try{
+    const value=JSON.parse(await fs.readFile(massiveConfigPath(),'utf8'));
+    massiveConfigCache={schemaVersion:1,enabled:value.enabled===true,apiKeyEncrypted:String(value.apiKeyEncrypted||'')};
+  }catch(error){if(error.code!=='ENOENT')throw error;massiveConfigCache={...defaultMassiveConfig}}
+  return massiveConfigCache;
+}
+async function writeMassiveConfig(value={}){
+  const previous=await readMassiveConfig(),apiKey=String(value.apiKey||'').trim();
+  const normalized={
+    schemaVersion:1,
+    enabled:value.enabled===true,
+    apiKeyEncrypted:value.clearApiKey===true?'':(apiKey?encryptLocalSecret(apiKey):previous.apiKeyEncrypted),
+  };
+  if(normalized.enabled&&!normalized.apiKeyEncrypted)throw new Error('Massive requiere una clave de API para activarse.');
+  const target=massiveConfigPath(),temporary=`${target}.${randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(target),{recursive:true});
+  await fs.writeFile(temporary,JSON.stringify(normalized,null,2),'utf8');
+  await fs.rename(temporary,target);
+  massiveConfigCache=normalized;massiveClientInstance=null;
+  return publicMassiveConfig(normalized);
+}
+let massiveClientInstance=null;
+async function massiveClient(){
+  const config=await readMassiveConfig();
+  if(!config.enabled)return null;
+  const apiKey=decryptLocalSecret(config.apiKeyEncrypted);
+  if(!apiKey)throw new Error('No se pudo descifrar la clave de Massive; vuelve a introducirla.');
+  if(!massiveClientInstance)massiveClientInstance=createMassiveClient({apiKey});
+  return massiveClientInstance;
+}
+ipcMain.handle('massive:get-config',async()=>({ok:true,config:publicMassiveConfig(await readMassiveConfig())}));
+ipcMain.handle('massive:save-config',async(_event,value)=>({ok:true,config:await writeMassiveConfig(value)}));
+ipcMain.handle('massive:test',async()=>{
+  const client=await massiveClient();
+  if(!client)throw new Error('Activa Massive y guarda la clave antes de probar.');
+  const{previousSessionDate,currentSessionDate}=lastTwoSessionDates(new Date());
+  const snapshot=await client.extendedHoursSnapshot('AAPL',previousSessionDate,currentSessionDate);
+  if(snapshot.error)throw new Error(`Massive respondió: ${snapshot.error}`);
+  return{ok:true,ticker:snapshot.ticker,previousClose:snapshot.previousClose,
+    premarketBars:snapshot.premarket?.bars??0,afterHoursBars:snapshot.afterHours?.bars??0};
+});
+
 let secEdgarClientInstance=null,secEdgarClientContact='';
 async function secEdgar(){
   const {contact}=await readSecEdgarConfig();
@@ -312,9 +365,32 @@ async function buildDailyReportAssets(){
     )
   );
   const vixSummary=vix?.ok&&vix.snapshot?{value:vix.snapshot.value,observedAt:vix.snapshot.observedAt,source:'TradingView / Cloudflare'}:null;
+
+  // Horario extendido vía Massive. El símbolo del escáner viene con sufijo de plaza
+  // (AAPL.US); normalizeSecTicker ya resuelve esa traducción y distingue el sufijo de
+  // una clase de acción (BRK.B → BRK-B), así que se reutiliza en lugar de duplicarla.
+  const now=new Date(),{previousSessionDate,currentSessionDate}=lastTwoSessionDates(now);
+  let extendedHours=[],extendedHoursSource={connected:false,brokerName:null};
+  try{
+    const client=await massiveClient();
+    if(client){
+      extendedHoursSource={connected:true,brokerName:'Massive'};
+      // En serie a propósito: el cliente espacia las llamadas para respetar el límite
+      // del plan; lanzarlas en paralelo solo provocaría 429.
+      for(const stock of stocks.slice(0,DAILY_REPORT_MAX_STOCK_DETAILS)){
+        const ticker=normalizeSecTicker(stock.symbol);
+        if(!ticker){extendedHours.push({ticker:stock.symbol,error:'Símbolo no traducible a ticker de EE. UU.',premarket:null,afterHours:null,previousClose:null});continue}
+        extendedHours.push(await client.extendedHoursSnapshot(ticker,previousSessionDate,currentSessionDate));
+      }
+    }
+  }catch(cause){
+    extendedHoursSource={connected:false,brokerName:null,error:cause instanceof Error?cause.message:String(cause)};
+  }
+
   return{
-    generatedAtIso:new Date().toISOString(),
-    extendedHoursSource:{connected:false,brokerName:null},
+    generatedAtIso:now.toISOString(),
+    previousSessionDate,currentSessionDate,
+    extendedHoursSource,extendedHours,
     stocks,catalysts,vix:vixSummary,macro,
   };
 }

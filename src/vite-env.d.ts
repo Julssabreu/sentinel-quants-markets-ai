@@ -27,6 +27,9 @@ interface Window {
     getSecCompanySnapshot: (ticker: string) => Promise<import('./dailyIntelligence').EdgarSnapshot>;
     getSecEdgarConfig: () => Promise<{ok:boolean;config:{schemaVersion:number;contact:string}}>;
     saveSecEdgarConfig: (value: {contact: string}) => Promise<{ok:boolean;config:{schemaVersion:number;contact:string}}>;
+    getMassiveConfig: () => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean;hasApiKey:boolean}}>;
+    saveMassiveConfig: (value: {enabled:boolean;apiKey?:string;clearApiKey?:boolean}) => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean;hasApiKey:boolean}}>;
+    testMassive: () => Promise<{ok:boolean;ticker:string;previousClose:number|null;premarketBars:number;afterHoursBars:number}>;
     getDailyReportConfig: () => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean};schedule:{stopped:boolean;running:boolean;lastRunAt:number|null;lastError:string|null;nextRunAt:number|null;utcHour:number;utcMinute:number}|null}>;
     saveDailyReportConfig: (value: {enabled: boolean}) => Promise<{ok:boolean;config:{schemaVersion:number;enabled:boolean}}>;
     sendDailyReportNow: () => Promise<{ok:boolean;charCount:number}>;

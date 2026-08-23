@@ -21,11 +21,11 @@ describe('buildDailyReportHtml (premercado y posmercado — solo acciones)', () 
   it('declara explícitamente cuando no hay fuente de horario extendido conectada', () => {
     const html = buildDailyReportHtml(base);
     expect(html).toContain('Premercado y after-hours: dato no disponible');
-    expect(html).toContain('TradeStation o Interactive Brokers');
+    expect(html).toContain('Massive');
   });
 
   it('omite el aviso de horario extendido cuando sí hay fuente conectada', () => {
-    const html = buildDailyReportHtml({ ...base, extendedHoursSource: { connected: true, brokerName: 'TradeStation' } });
+    const html = buildDailyReportHtml({ ...base, extendedHoursSource: { connected: true, brokerName: 'Massive' } });
     expect(html).not.toContain('Premercado y after-hours: dato no disponible');
   });
 
@@ -115,5 +115,52 @@ describe('previousRegularSessionCloseDate — fin de semana lee el viernes', () 
     const html = buildDailyReportHtml({ ...base, generatedAtIso: '2026-08-24T13:00:00.000Z' });
     expect(html).toContain('21 de agosto');
     expect(html).not.toContain('23 de agosto');
+  });
+});
+
+describe('tablas de horario extendido', () => {
+  const connected = {
+    ...base,
+    extendedHoursSource: { connected: true, brokerName: 'Massive' },
+    previousSessionDate: '2026-08-20',
+    currentSessionDate: '2026-08-21',
+    extendedHours: [{
+      ticker: 'AAPL', previousClose: 311.295, error: null,
+      afterHours: { last: 312.1, high: 313, low: 311.1, bars: 191, changePercent: 0.2586 },
+      premarket: { last: 312.28, high: 312.7, low: 310, bars: 252, changePercent: 0.3163 },
+    }],
+  };
+
+  it('muestra posmercado y premercado con sus fechas de sesión reales', () => {
+    const html = buildDailyReportHtml(connected);
+    expect(html).toContain('Posmercado del 2026-08-20');
+    expect(html).toContain('Premercado del 2026-08-21');
+  });
+
+  it('presenta cierre de referencia, último y variación con signo', () => {
+    const html = buildDailyReportHtml(connected);
+    expect(html).toContain('311.30');   // cierre regular redondeado
+    expect(html).toContain('312.28');   // último de premercado
+    expect(html).toContain('+0.32%');   // variación de premercado
+    expect(html).toContain('+0.26%');   // variación de after-hours
+  });
+
+  it('un ticker con error de Massive no inventa filas', () => {
+    const html = buildDailyReportHtml({
+      ...connected,
+      extendedHours: [{ ticker: 'ZZZZ', previousClose: null, error: 'HTTP 404', afterHours: null, premarket: null }],
+    });
+    expect(html).toContain('Sin operaciones registradas en premercado');
+    expect(html).not.toContain('ZZZZ');
+  });
+
+  it('sin fuente conectada no renderiza las tablas en absoluto', () => {
+    const html = buildDailyReportHtml(base);
+    expect(html).not.toContain('Posmercado del');
+    expect(html).not.toContain('Premercado del');
+  });
+
+  it('declara el retraso de 15 minutos cuando la fuente está conectada', () => {
+    expect(buildDailyReportHtml(connected)).toContain('15 minutos de retraso');
   });
 });
