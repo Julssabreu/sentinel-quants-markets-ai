@@ -93,17 +93,19 @@ function newYorkDayOfWeek(dateIso) {
  * de mercado: Sentinel no tiene un calendario de feriados conectado, así que en un
  * feriado el informe encontrará simplemente cero barras y lo declarará.
  */
-function lastTwoSessionDates(now) {
-  const stepBack = (dateIso, days) => {
-    const date = new Date(`${dateIso}T12:00:00Z`);
+function previousWeekdayIso(dateIso) {
+  const stepBack = (iso, days) => {
+    const date = new Date(`${iso}T12:00:00Z`);
     date.setUTCDate(date.getUTCDate() - days);
     return date.toISOString().slice(0, 10);
   };
-  const previousWeekday = dateIso => {
-    let cursor = dateIso;
-    do { cursor = stepBack(cursor, 1); } while (newYorkDayOfWeek(cursor) === 0 || newYorkDayOfWeek(cursor) === 6);
-    return cursor;
-  };
+  let cursor = dateIso;
+  do { cursor = stepBack(cursor, 1); } while (newYorkDayOfWeek(cursor) === 0 || newYorkDayOfWeek(cursor) === 6);
+  return cursor;
+}
+
+function lastTwoSessionDates(now) {
+  const previousWeekday = previousWeekdayIso;
   let currentSessionDate = newYorkDateIso(now.getTime());
   const day = newYorkDayOfWeek(currentSessionDate);
   if (day === 0 || day === 6) currentSessionDate = previousWeekday(currentSessionDate);
@@ -366,6 +368,7 @@ module.exports = {
   newYorkTimeToUtcMs,
   newYorkDateIso,
   lastTwoSessionDates,
+  previousWeekdayIso,
   sessionWindowsForDate,
   splitSessions,
   summarizeWindow,

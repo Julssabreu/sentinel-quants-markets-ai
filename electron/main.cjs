@@ -17,7 +17,7 @@ const { createEvidenceLedger, stableJson } = require('../shared/evidenceLedger.c
 const { createPersistentLogger } = require('../shared/persistentLog.cjs');
 const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
-const { createMassiveClient, lastTwoSessionDates, selectAdaptiveUniverse } = require('../shared/massiveClient.cjs');
+const { createMassiveClient, lastTwoSessionDates, previousWeekdayIso, selectAdaptiveUniverse } = require('../shared/massiveClient.cjs');
 const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
 const { buildDailyReportHtml } = require('../shared/dailyReportHtml.cjs');
 const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
@@ -310,6 +310,8 @@ const DAILY_REPORT_UTC_HOUR=13,DAILY_REPORT_UTC_MINUTE=0;
 const DAILY_REPORT_INDEX_PROXIES=['SPY','QQQ','DIA','IWM'];
 /** Presupuesto de llamadas del plan gratuito: ver comentario en buildDailyReportAssets. */
 const DAILY_REPORT_MAX_MOVERS=8,DAILY_REPORT_MAX_CATALYSTS=4,DAILY_REPORT_MAX_PREVIEW=3;
+/** Cuántas jornadas hábiles retroceder buscando datos antes de rendirse. */
+const DAILY_REPORT_MAX_SESSION_LOOKBACK=5;
 function dailyReportConfigPath(){return path.join(app.getPath('userData'),'sentinel-daily-report.json')}
 const defaultDailyReportConfig={schemaVersion:1,enabled:false};
 function normalizeDailyReportConfig(value={}){return{schemaVersion:1,enabled:value.enabled===true}}
@@ -337,14 +339,38 @@ async function writeDailyReportConfig(value){
 // (TradeStation o Interactive Brokers); mientras tanto extendedHoursSource.connected
 // se queda en false.
 /**
+ * Encuentra la última sesión con datos realmente disponibles y devuelve, de paso, el
+ * mercado completo de ese día.
+ *
+ * El plan gratuito de Massive entrega "End of Day Data": el día en curso responde 403.
+ * En vez de asumir cuántos días atrás hay que mirar, se prueba y se retrocede — así el
+ * informe sigue funcionando en feriados o si el proveedor se retrasa, sin devolver una
+ * sección vacía sin explicación. La llamada de sondeo no se desperdicia: es la misma
+ * que después alimenta el universo del día.
+ */
+async function resolveReportSession(client,now){
+  let candidate=lastTwoSessionDates(now).currentSessionDate;
+  for(let attempt=0;attempt<DAILY_REPORT_MAX_SESSION_LOOKBACK;attempt++){
+    const grouped=await client.groupedDaily(candidate);
+    if(grouped.ok&&grouped.data.length)
+      return{sessionDate:candidate,previousSessionDate:previousWeekdayIso(candidate),universe:grouped.data,attempts:attempt+1};
+    candidate=previousWeekdayIso(candidate);
+  }
+  return null;
+}
+
+/**
  * Reúne todo lo que consume el informe. El universo de acciones ya no sale del escáner
  * MT5: ese feed son CFDs, no acciones de EE. UU. Massive entrega el mercado completo
  * (~12.500 símbolos) en una sola llamada, que es la fuente correcta para este informe.
  *
- * Presupuesto de llamadas con el plan gratuito (5 por minuto), en serie porque el
- * cliente las espacia solo: 1 estado + 1 feriados + 1 mercado completo + 4 índices +
- * 8 movers + 1 noticias ≈ 16 llamadas, unos 3,5 minutos. Aceptable para una tarea
- * diaria; imposible si se intentara escanear los 12.500 símbolos uno a uno.
+ * El informe cubre la última sesión COMPLETA: su premercado, su sesión regular y su
+ * after-hours. No intenta el premercado del día en curso porque el plan gratuito no lo
+ * entrega; declararlo es más honesto que dejar la sección vacía cada mañana.
+ *
+ * Presupuesto de llamadas del plan gratuito (5 por minuto), en serie porque el cliente
+ * las espacia solo: 1 estado + 1 feriados + 1 mercado completo + 4 índices + 8 movers +
+ * 1 noticias ≈ 16 llamadas, unos 3,5 minutos.
  */
 async function buildDailyReportAssets(){
   const [macro,vix]=await Promise.all([
@@ -352,52 +378,56 @@ async function buildDailyReportAssets(){
     getTradingViewVixContext(false).catch(()=>null),
   ]);
   const vixSummary=vix?.ok&&vix.snapshot?{value:vix.snapshot.value,observedAt:vix.snapshot.observedAt,source:'TradingView / Cloudflare'}:null;
-  const now=new Date(),{previousSessionDate,currentSessionDate}=lastTwoSessionDates(now);
+  const now=new Date();
 
   let extendedHoursSource={connected:false,brokerName:null},
-      indices=[],movers=[],news=[],marketHolidays=[],marketStatus=null,catalysts=[];
+      indices=[],movers=[],news=[],marketHolidays=[],marketStatus=null,catalysts=[],
+      sessionDate=null,previousSessionDate=null;
 
   try{
     const client=await massiveClient();
     if(client){
-      extendedHoursSource={connected:true,brokerName:'Massive'};
+      const session=await resolveReportSession(client,now);
+      if(!session){
+        extendedHoursSource={connected:false,brokerName:null,error:'Massive no tiene datos disponibles para ninguna sesión reciente.'};
+      }else{
+        extendedHoursSource={connected:true,brokerName:'Massive'};
+        sessionDate=session.sessionDate;previousSessionDate=session.previousSessionDate;
 
-      const status=await client.marketStatus();
-      if(status.ok)marketStatus=status.data;
-      const holidays=await client.upcomingMarketHolidays();
-      if(holidays.ok)marketHolidays=holidays.data;
+        const status=await client.marketStatus();
+        if(status.ok)marketStatus=status.data;
+        const holidays=await client.upcomingMarketHolidays();
+        if(holidays.ok)marketHolidays=holidays.data;
 
-      // Índices de referencia: son ETF, así que se consultan como cualquier acción.
-      for(const ticker of DAILY_REPORT_INDEX_PROXIES){
-        const snapshot=await client.extendedHoursSnapshot(ticker,previousSessionDate,currentSessionDate);
-        indices.push({
-          ticker,
-          previousRegular:Number.isFinite(snapshot.previousClose)?{last:snapshot.previousClose,changePercent:snapshot.previousRegularChangePercent}:null,
-          premarket:snapshot.premarket,
-          afterHours:snapshot.afterHours,
-          error:snapshot.error,
-        });
+        // Índices de referencia: son ETF, así que se consultan como cualquier acción.
+        for(const ticker of DAILY_REPORT_INDEX_PROXIES){
+          const snapshot=await client.extendedHoursSnapshot(ticker,previousSessionDate,sessionDate);
+          indices.push({
+            ticker,
+            previousRegular:Number.isFinite(snapshot.previousClose)?{last:snapshot.previousClose,changePercent:snapshot.previousRegularChangePercent}:null,
+            premarket:snapshot.premarket,
+            afterHours:snapshot.afterHours,
+            error:snapshot.error,
+          });
+        }
+
+        // Universo de la sesión: mercado completo filtrado por liquidez y ordenado por
+        // movimiento absoluto. Excluye los índices para no duplicarlos.
+        const universe=selectAdaptiveUniverse(session.universe,{limit:DAILY_REPORT_MAX_MOVERS,exclude:DAILY_REPORT_INDEX_PROXIES});
+        for(const candidate of universe){
+          movers.push(await client.extendedHoursSnapshot(candidate.ticker,previousSessionDate,sessionDate));
+        }
+
+        const newsResponse=await client.news(undefined,10);
+        if(newsResponse.ok)news=newsResponse.data;
+
+        // EDGAR es una API distinta, con su propio límite: no compite por el de Massive.
+        catalysts=await Promise.all(
+          movers.slice(0,DAILY_REPORT_MAX_CATALYSTS).map(mover=>
+            fetchSecCompanySnapshot(mover.ticker).catch(cause=>({ticker:mover.ticker,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)}))
+          )
+        );
       }
-
-      // Universo del día: mercado completo filtrado por liquidez y ordenado por
-      // movimiento absoluto. Excluye los propios índices para no duplicarlos.
-      const grouped=await client.groupedDaily(previousSessionDate);
-      const universe=grouped.ok
-        ? selectAdaptiveUniverse(grouped.data,{limit:DAILY_REPORT_MAX_MOVERS,exclude:DAILY_REPORT_INDEX_PROXIES})
-        : [];
-      for(const candidate of universe){
-        movers.push(await client.extendedHoursSnapshot(candidate.ticker,previousSessionDate,currentSessionDate));
-      }
-
-      const newsResponse=await client.news(undefined,10);
-      if(newsResponse.ok)news=newsResponse.data;
-
-      // EDGAR es una API distinta, con su propio límite: no compite por el de Massive.
-      catalysts=await Promise.all(
-        movers.slice(0,DAILY_REPORT_MAX_CATALYSTS).map(mover=>
-          fetchSecCompanySnapshot(mover.ticker).catch(cause=>({ticker:mover.ticker,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)}))
-        )
-      );
     }
   }catch(cause){
     extendedHoursSource={connected:false,brokerName:null,error:cause instanceof Error?cause.message:String(cause)};
@@ -405,7 +435,7 @@ async function buildDailyReportAssets(){
 
   return{
     generatedAtIso:now.toISOString(),
-    previousSessionDate,currentSessionDate,
+    sessionDate,previousSessionDate,
     extendedHoursSource,indices,movers,news,catalysts,marketHolidays,marketStatus,
     vix:vixSummary,macro,
   };

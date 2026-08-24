@@ -183,23 +183,23 @@ function buildDailyReportHtml(data) {
     <div class="meta">
       <p><strong>Fecha:</strong> ${esc(fecha)}</p>
       <p><strong>Corte de datos:</strong> ${esc(ast)} hora de República Dominicana · ${esc(et)} ET</p>
-      <p><strong>Alcance:</strong> cierre regular y after-hours del ${esc(data.previousSessionDate ?? '—')} + premercado del ${esc(data.currentSessionDate ?? '—')}.</p>
-      <p><strong>Sesgo base:</strong> ${esc(bias.label)} — ${esc(bias.detail)}</p>
+      <p><strong>Alcance:</strong> sesión completa del ${esc(data.sessionDate ?? '—')} — su premercado, su sesión regular y su after-hours. Cierre de referencia: ${esc(data.previousSessionDate ?? '—')}.</p>
+      <p><strong>Sesgo de la sesión:</strong> ${esc(bias.label)} — ${esc(bias.detail)}</p>
     </div>
 
     ${banner}
 
-    <h2>1. Estado del mercado y apertura</h2>
-    <h3>Cierre regular del ${esc(data.previousSessionDate ?? 'día anterior')}</h3>
+    <h2>1. Estado del mercado</h2>
+    <h3>Cierre de referencia del ${esc(data.previousSessionDate ?? 'día anterior')}</h3>
     ${indices.length ? `<table><tr><th>Proxy</th><th>Índice</th><th>Cierre</th><th>Sesión</th></tr>${renderIndexRows(indices, 'previousRegular')}</table>` : '<p>Dato no disponible.</p>'}
 
-    <h3>Premercado del ${esc(data.currentSessionDate ?? 'día actual')}</h3>
+    <h3>Premercado del ${esc(data.sessionDate ?? 'la sesión')}</h3>
     ${indices.length ? `<table><tr><th>Proxy</th><th>Índice</th><th>Último</th><th>Variación</th></tr>${renderIndexRows(indices, 'premarket')}</table>` : '<p>Dato no disponible.</p>'}
 
     <div class="callout">
       <strong>Lectura:</strong> ${esc(bias.detail)}
-      Los porcentajes son fotografías del premercado, no precios de ejecución: la validación
-      real llega con el rango de los primeros 15–30 minutos de sesión regular.
+      Estos porcentajes describen cómo se comportó el premercado de esa sesión frente al
+      cierre anterior, no una lectura en vivo del día de hoy.
     </div>
 
     <h2>2. Macro y riesgo de sesión</h2>
@@ -225,13 +225,13 @@ function buildDailyReportHtml(data) {
       ${holidays.slice(0, 4).map(h => `<tr><td>${esc(h.date)}</td><td>${esc(h.name ?? '—')}</td><td>${esc(h.status ?? '—')}</td></tr>`).join('')}
       </table>` : ''}
 
-    <h2>3. Movimientos destacados del premercado</h2>
+    <h2>3. Movimientos del premercado — ${esc(data.sessionDate ?? 'la sesión')}</h2>
     ${premarketMoverRows
       ? `<table><tr><th>Ticker</th><th>Premercado</th><th>Cierre previo</th><th>Último</th><th>Rango</th><th>Barras</th></tr>${premarketMoverRows}</table>
-         <p class="limits">Universo seleccionado por liquidez y movimiento de la sesión anterior sobre el mercado completo de EE. UU. Un porcentaje grande sin volumen no equivale a una oportunidad.</p>`
+         <p class="limits">Universo seleccionado sobre el mercado completo de EE. UU. filtrando por precio y volumen en dólares antes de ordenar por movimiento absoluto. Un porcentaje grande sin volumen detrás no equivale a una oportunidad.</p>`
       : '<p>Sin operaciones de premercado registradas para el universo observado.</p>'}
 
-    <h2>4. Posmercado del ${esc(data.previousSessionDate ?? 'día anterior')}</h2>
+    <h2>4. Posmercado — ${esc(data.sessionDate ?? 'la sesión')}</h2>
     ${afterHoursMoverRows
       ? `<table><tr><th>Ticker</th><th>After-hours</th><th>Cierre regular</th><th>Último</th><th>Rango</th><th>Barras</th></tr>${afterHoursMoverRows}</table>`
       : '<p>Sin operaciones registradas en after-hours para el universo observado.</p>'}
@@ -242,7 +242,7 @@ function buildDailyReportHtml(data) {
     <h2>5. Noticias del universo observado</h2>
     ${renderNews(data.news)}
 
-    <h2>6. Plan de apertura</h2>
+    <h2>6. Disciplina de apertura</h2>
     <ol class="checklist">
       <li>No comprar la primera vela: los primeros dos minutos no son una señal.</li>
       <li>Esperar 15–30 minutos para definir el rango inicial y el VWAP.</li>
@@ -274,12 +274,18 @@ function buildDailyReportHtml(data) {
 
     <h3>Límites conocidos</h3>
     <p class="limits">
+      <strong>Este informe describe la última sesión completa, no el premercado de hoy.</strong>
+      El plan gratuito de la fuente entrega datos de fin de jornada: el día en curso no
+      está disponible. Por eso el documento cubre íntegramente la sesión del
+      ${esc(data.sessionDate ?? '—')} —su premercado, su sesión regular y su after-hours—
+      en lugar de mostrar una sección vacía cada mañana. Para un brief previo a la
+      apertura del día en curso haría falta un plan de pago.
+    </p>
+    <p class="limits">
       <strong>No incluye consenso ni objetivos de precio de analistas</strong> (subidas de
       recomendación, precios objetivo a 12 meses): no existe una fuente gratuita y
       verificable conectada, y se prefiere declararlo antes que inventarlo.
-      No incluye calendario de resultados futuros ni narrativa geopolítica.
-      Los datos de horario extendido llegan con hasta 15 minutos de retraso: sirven para
-      resumir lo ocurrido, no para ejecutar en vivo.
+      Tampoco incluye calendario de resultados futuros ni narrativa geopolítica.
       Este documento se compone de forma determinista a partir de datos verificables;
       ninguna IA origina un dato.
     </p>

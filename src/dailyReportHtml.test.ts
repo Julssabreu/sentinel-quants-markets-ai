@@ -5,7 +5,7 @@ import { buildDailyReportHtml, deriveBias } from '../shared/dailyReportHtml.cjs'
 const base = {
   generatedAtIso: '2026-08-24T13:00:00.000Z',
   previousSessionDate: '2026-08-21',
-  currentSessionDate: '2026-08-24',
+  sessionDate: '2026-08-21',
   extendedHoursSource: { connected: true, brokerName: 'Massive' },
   indices: [], movers: [], catalysts: [], news: [], macro: null, vix: null, marketHolidays: [],
 };
@@ -56,12 +56,12 @@ describe('buildDailyReportHtml', () => {
   it('incluye las siete secciones del informe de referencia', () => {
     const html = buildDailyReportHtml(base);
     for (const heading of [
-      '1. Estado del mercado y apertura',
+      '1. Estado del mercado',
       '2. Macro y riesgo de sesión',
-      '3. Movimientos destacados del premercado',
-      '4. Posmercado del',
+      '3. Movimientos del premercado',
+      '4. Posmercado',
       '5. Noticias del universo observado',
-      '6. Plan de apertura',
+      '6. Disciplina de apertura',
       '7. Fuentes y metodología',
     ]) expect(html).toContain(heading);
   });
@@ -131,5 +131,20 @@ describe('buildDailyReportHtml', () => {
     const html = buildDailyReportHtml(base);
     expect(html).toMatch(/09:00 hora de República Dominicana/);
     expect(html).toMatch(/09:00 ET/);
+  });
+
+  it('declara que cubre la última sesión completa, no el premercado de hoy', () => {
+    // Sin esta advertencia el lector podría leer un premercado del viernes creyendo
+    // que es el de hoy — el peor malentendido posible en un informe de mercado.
+    const html = buildDailyReportHtml(base);
+    expect(html).toContain('describe la última sesión completa, no el premercado de hoy');
+    expect(html).toContain('plan de pago');
+  });
+
+  it('nombra la sesión cubierta en el alcance y en las secciones', () => {
+    const html = buildDailyReportHtml(base);
+    expect(html).toContain('sesión completa del 2026-08-21');
+    expect(html).toContain('Premercado del 2026-08-21');
+    expect(html).toContain('Posmercado — 2026-08-21');
   });
 });
