@@ -1,166 +1,135 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error CommonJS shared production module
-import { buildDailyReportHtml, previousRegularSessionCloseDate } from '../shared/dailyReportHtml.cjs';
+import { buildDailyReportHtml, deriveBias } from '../shared/dailyReportHtml.cjs';
 
 const base = {
-  generatedAtIso: '2026-08-22T13:00:00.000Z',
-  extendedHoursSource: { connected: false, brokerName: null },
-  vix: null, macro: null, catalysts: [], stocks: [],
+  generatedAtIso: '2026-08-24T13:00:00.000Z',
+  previousSessionDate: '2026-08-21',
+  currentSessionDate: '2026-08-24',
+  extendedHoursSource: { connected: true, brokerName: 'Massive' },
+  indices: [], movers: [], catalysts: [], news: [], macro: null, vix: null, marketHolidays: [],
 };
 
-describe('buildDailyReportHtml (premercado y posmercado — solo acciones)', () => {
-  it('nunca escapa a XSS: un símbolo malicioso no rompe el HTML', () => {
-    const html = buildDailyReportHtml({
-      ...base,
-      stocks: [{ symbol: '<script>alert(1)</script>', direction: 'BUY', score: 90, description: 'x' }],
-    });
+const index = (ticker: string, premarketPct: number, close = 100) => ({
+  ticker,
+  previousRegular: { last: close, changePercent: -0.3 },
+  premarket: { last: close * (1 + premarketPct / 100), changePercent: premarketPct },
+});
+
+describe('deriveBias — sesgo leído del dato, no opinado', () => {
+  it('sin índices no declara ningún sesgo', () => {
+    expect(deriveBias([]).label).toContain('Sin datos');
+  });
+
+  it('declara defensivo cuando los proxies caen', () => {
+    expect(deriveBias([index('SPY', -0.5), index('QQQ', -1.3)]).label).toBe('Defensivo');
+  });
+
+  it('declara constructivo cuando los proxies suben', () => {
+    expect(deriveBias([index('SPY', 0.6), index('QQQ', 0.7)]).label).toBe('Constructivo');
+  });
+
+  it('declara mixto en el rango intermedio', () => {
+    expect(deriveBias([index('SPY', 0.1), index('QQQ', -0.1)]).label).toContain('Mixto');
+  });
+
+  it('detecta rezago del Nasdaq frente al S&P 500', () => {
+    const bias = deriveBias([index('SPY', -0.1), index('QQQ', -1.3)]);
+    expect(bias.detail).toContain('Nasdaq va rezagado');
+  });
+
+  it('no inventa rezago cuando ambos van parejos', () => {
+    expect(deriveBias([index('SPY', 0.1), index('QQQ', 0.1)]).detail).not.toContain('rezagado');
+  });
+});
+
+describe('buildDailyReportHtml', () => {
+  it('nunca escapa a XSS', () => {
+    const html = buildDailyReportHtml({ ...base, movers: [{
+      ticker: '<script>alert(1)</script>', previousClose: 10,
+      premarket: { last: 11, high: 11, low: 10, bars: 5, changePercent: 10 }, afterHours: null,
+    }] });
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
   });
 
-  it('declara explícitamente cuando no hay fuente de horario extendido conectada', () => {
+  it('incluye las siete secciones del informe de referencia', () => {
     const html = buildDailyReportHtml(base);
-    expect(html).toContain('Premercado y after-hours: dato no disponible');
-    expect(html).toContain('Massive');
+    for (const heading of [
+      '1. Estado del mercado y apertura',
+      '2. Macro y riesgo de sesión',
+      '3. Movimientos destacados del premercado',
+      '4. Posmercado del',
+      '5. Noticias del universo observado',
+      '6. Plan de apertura',
+      '7. Fuentes y metodología',
+    ]) expect(html).toContain(heading);
   });
 
-  it('omite el aviso de horario extendido cuando sí hay fuente conectada', () => {
-    const html = buildDailyReportHtml({ ...base, extendedHoursSource: { connected: true, brokerName: 'Massive' } });
-    expect(html).not.toContain('Premercado y after-hours: dato no disponible');
+  it('muestra cierre previo y premercado de los índices con su nombre', () => {
+    const html = buildDailyReportHtml({ ...base, indices: [index('SPY', -0.49, 745.06), index('QQQ', -1.3)] });
+    expect(html).toContain('S&amp;P 500');
+    expect(html).toContain('Nasdaq 100');
+    expect(html).toContain('-0.49%');
+    expect(html).toContain('-1.30%');
   });
 
-  it('declara VIX no disponible en vez de omitir la sección', () => {
-    expect(buildDailyReportHtml(base)).toContain('VIX:</strong> Dato no disponible');
+  it('ordena los movers por movimiento absoluto, no por signo', () => {
+    const html = buildDailyReportHtml({ ...base, movers: [
+      { ticker: 'SUBE', previousClose: 100, premarket: { last: 103, high:103, low:100, bars:10, changePercent: 3 }, afterHours: null },
+      { ticker: 'CAE', previousClose: 100, premarket: { last: 93, high:100, low:93, bars:10, changePercent: -7 }, afterHours: null },
+    ] });
+    expect(html.indexOf('CAE')).toBeLessThan(html.indexOf('SUBE'));
   });
 
-  it('muestra el nivel de VIX cuando existe', () => {
-    const html = buildDailyReportHtml({ ...base, vix: { value: 15.01, observedAt: '2026-08-22T13:00:00Z', source: 'TradingView' } });
-    expect(html).toContain('15.01');
+  it('un mover sin datos de una ventana no aparece en esa tabla', () => {
+    const html = buildDailyReportHtml({ ...base, movers: [
+      { ticker: 'SOLOPRE', previousClose: 100, premarket: { last: 103, high:103, low:100, bars:10, changePercent: 3 }, afterHours: null },
+    ] });
+    expect(html).toContain('SOLOPRE');
+    expect(html).toContain('Sin operaciones registradas en after-hours');
   });
 
-  it('lista catalizadores reales de SEC EDGAR con enlace al documento original', () => {
-    const html = buildDailyReportHtml({
-      ...base,
-      catalysts: [{
-        ticker: 'AAPL', companyName: 'Apple Inc.', error: null,
-        filings: [{ form: '10-Q', filingDate: '2026-07-31', documentUrl: 'https://www.sec.gov/x.htm' }],
-      }],
-    });
-    expect(html).toContain('Apple Inc.');
-    expect(html).toContain('10-Q');
-    expect(html).toContain('https://www.sec.gov/x.htm');
+  it('lista noticias con editorial y enlace verificable', () => {
+    const html = buildDailyReportHtml({ ...base, news: [
+      { title: 'Apple sube tras resultados', publisher: 'Reuters', url: 'https://x.com/a', publishedAt: '2026-08-24T10:00:00Z', tickers: ['AAPL'] },
+    ] });
+    expect(html).toContain('Apple sube tras resultados');
+    expect(html).toContain('Reuters');
+    expect(html).toContain('https://x.com/a');
   });
 
-  it('un ticker sin presentaciones o con error de EDGAR no aparece en la tabla de catalizadores', () => {
-    const html = buildDailyReportHtml({
-      ...base,
-      catalysts: [
-        { ticker: 'ZZZZ', companyName: null, error: 'HTTP 403', filings: [] },
-        { ticker: 'YYYY', companyName: 'Sin filings', error: null, filings: [] },
-      ],
-    });
-    expect(html).toContain('Sin presentaciones recientes');
-    expect(html).not.toContain('ZZZZ');
-    expect(html).not.toContain('YYYY');
+  it('filtra los rendimientos del bloque macro', () => {
+    const html = buildDailyReportHtml({ ...base, macro: { indicators: [
+      { name: 'Rendimiento del Tesoro a 10 años', value: 4.75, unit: '%', source: 'Treasury' },
+      { name: 'Precio del pan', value: 3, unit: 'USD', source: 'Irrelevante' },
+    ] } });
+    expect(html).toContain('Rendimiento del Tesoro a 10 años');
+    expect(html).not.toContain('Precio del pan');
   });
 
-  it('nunca inventa consenso de analistas ni datos de premercado', () => {
+  it('muestra próximos cierres del mercado cuando existen', () => {
+    const html = buildDailyReportHtml({ ...base, marketHolidays: [
+      { date: '2026-09-07', name: 'Labor Day', status: 'closed' },
+    ] });
+    expect(html).toContain('Labor Day');
+    expect(html).toContain('2026-09-07');
+  });
+
+  it('declara explícitamente que no tiene consenso de analistas', () => {
     const html = buildDailyReportHtml(base);
-    expect(html).toContain('consenso de analistas');
+    expect(html).toContain('No incluye consenso ni objetivos de precio de analistas');
     expect(html).toContain('ninguna IA origina un dato');
   });
 
-  it('el universo de acciones aclara que es sesión regular, no premercado', () => {
-    const html = buildDailyReportHtml({
-      ...base,
-      stocks: [{ symbol: 'AAPL.US', direction: 'BUY', score: 91, description: 'Apple' }],
-    });
-    expect(html).toContain('No es una lectura de premercado');
-    expect(html).toContain('AAPL.US');
-    expect(html).toContain('ALCISTA');
+  it('avisa cuando no hay fuente de horario extendido conectada', () => {
+    const html = buildDailyReportHtml({ ...base, extendedHoursSource: { connected: false, brokerName: null } });
+    expect(html).toContain('Premercado y after-hours: dato no disponible');
   });
 
-  it('convierte el timestamp a AST y a ET', () => {
-    const html = buildDailyReportHtml({ ...base, generatedAtIso: '2026-08-22T13:00:00.000Z' });
-    expect(html).toMatch(/09:00 AST/);
-    expect(html).toMatch(/09:00 ET/);
-  });
-});
-
-describe('previousRegularSessionCloseDate — fin de semana lee el viernes', () => {
-  // El informe corre todos los días del calendario, incluido lunes. "El cierre
-  // regular anterior" el lunes debe ser el del viernes, no el de un domingo que
-  // nunca existió como sesión.
-  it('un martes a viernes, el cierre anterior es el día calendario previo', () => {
-    // Miércoles 2026-08-19 09:00 AST -> martes 2026-08-18
-    expect(previousRegularSessionCloseDate(new Date('2026-08-19T13:00:00.000Z'))).toContain('18 de agosto');
-  });
-
-  it('un lunes, el cierre regular anterior es el viernes, no el domingo', () => {
-    // Lunes 2026-08-24 09:00 AST -> viernes 2026-08-21
-    expect(previousRegularSessionCloseDate(new Date('2026-08-24T13:00:00.000Z'))).toContain('21 de agosto');
-  });
-
-  it('un sábado, el cierre regular anterior sigue siendo el viernes', () => {
-    // Sábado 2026-08-22 09:00 AST -> viernes 2026-08-21
-    expect(previousRegularSessionCloseDate(new Date('2026-08-22T13:00:00.000Z'))).toContain('21 de agosto');
-  });
-
-  it('un domingo, el cierre regular anterior también es el viernes', () => {
-    // Domingo 2026-08-23 09:00 AST -> viernes 2026-08-21
-    expect(previousRegularSessionCloseDate(new Date('2026-08-23T13:00:00.000Z'))).toContain('21 de agosto');
-  });
-
-  it('el informe generado en HTML el lunes menciona el viernes, no el domingo', () => {
-    const html = buildDailyReportHtml({ ...base, generatedAtIso: '2026-08-24T13:00:00.000Z' });
-    expect(html).toContain('21 de agosto');
-    expect(html).not.toContain('23 de agosto');
-  });
-});
-
-describe('tablas de horario extendido', () => {
-  const connected = {
-    ...base,
-    extendedHoursSource: { connected: true, brokerName: 'Massive' },
-    previousSessionDate: '2026-08-20',
-    currentSessionDate: '2026-08-21',
-    extendedHours: [{
-      ticker: 'AAPL', previousClose: 311.295, error: null,
-      afterHours: { last: 312.1, high: 313, low: 311.1, bars: 191, changePercent: 0.2586 },
-      premarket: { last: 312.28, high: 312.7, low: 310, bars: 252, changePercent: 0.3163 },
-    }],
-  };
-
-  it('muestra posmercado y premercado con sus fechas de sesión reales', () => {
-    const html = buildDailyReportHtml(connected);
-    expect(html).toContain('Posmercado del 2026-08-20');
-    expect(html).toContain('Premercado del 2026-08-21');
-  });
-
-  it('presenta cierre de referencia, último y variación con signo', () => {
-    const html = buildDailyReportHtml(connected);
-    expect(html).toContain('311.30');   // cierre regular redondeado
-    expect(html).toContain('312.28');   // último de premercado
-    expect(html).toContain('+0.32%');   // variación de premercado
-    expect(html).toContain('+0.26%');   // variación de after-hours
-  });
-
-  it('un ticker con error de Massive no inventa filas', () => {
-    const html = buildDailyReportHtml({
-      ...connected,
-      extendedHours: [{ ticker: 'ZZZZ', previousClose: null, error: 'HTTP 404', afterHours: null, premarket: null }],
-    });
-    expect(html).toContain('Sin operaciones registradas en premercado');
-    expect(html).not.toContain('ZZZZ');
-  });
-
-  it('sin fuente conectada no renderiza las tablas en absoluto', () => {
+  it('convierte el corte de datos a AST y ET', () => {
     const html = buildDailyReportHtml(base);
-    expect(html).not.toContain('Posmercado del');
-    expect(html).not.toContain('Premercado del');
-  });
-
-  it('declara el retraso de 15 minutos cuando la fuente está conectada', () => {
-    expect(buildDailyReportHtml(connected)).toContain('15 minutos de retraso');
+    expect(html).toMatch(/09:00 hora de República Dominicana/);
+    expect(html).toMatch(/09:00 ET/);
   });
 });

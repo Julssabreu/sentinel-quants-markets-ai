@@ -121,6 +121,63 @@ function splitSessions(bars, dateIso) {
   };
 }
 
+/**
+ * Selecciona el universo del día a partir de las barras agrupadas de todo el mercado.
+ *
+ * El informe de referencia cubre "lo que se movió hoy", que sale de escanear el
+ * mercado completo. Massive entrega las ~12.500 acciones en UNA llamada, pero
+ * consultar el premercado de todas es imposible a 5 llamadas por minuto. Así que se
+ * filtra primero por liquidez y precio —para excluir centavos y papeles sin volumen,
+ * donde un porcentaje enorme no significa nada— y se ordena por movimiento absoluto.
+ *
+ * Filtrar por liquidez no es cosmético: un +40% en una acción que negoció US$20.000
+ * no es una señal de mercado, es ruido con spread imposible.
+ */
+function selectAdaptiveUniverse(groupedResults, options = {}) {
+  const minPrice = options.minPrice ?? 10;
+  const maxPrice = options.maxPrice ?? 10_000;
+  // US$1.000M de volumen negociado. Calibrado contra el mercado real del 2026-08-21:
+  // con US$50M el ranking se llenaba de microcaps (+60%, +47%, +45%) sin relevancia
+  // alguna; con US$1.000M aparecen nombres líquidos y reconocibles — y MRVL, que el
+  // informe de referencia del 18 de agosto también destacaba ese día.
+  const minDollarVolume = options.minDollarVolume ?? 1_000_000_000;
+  const limit = options.limit ?? 12;
+  const exclude = new Set((options.exclude ?? []).map(t => String(t).toUpperCase()));
+
+  return (groupedResults ?? [])
+    .filter(row => {
+      if (!row || typeof row.T !== 'string') return false;
+      if (exclude.has(row.T.toUpperCase())) return false;
+      if (!Number.isFinite(row.c) || !Number.isFinite(row.o) || !Number.isFinite(row.v)) return false;
+      if (row.c < minPrice || row.c > maxPrice) return false;
+      if (row.o <= 0) return false;
+      return row.c * row.v >= minDollarVolume;
+    })
+    .map(row => ({
+      ticker: row.T.toUpperCase(),
+      close: row.c,
+      open: row.o,
+      volume: row.v,
+      dollarVolume: row.c * row.v,
+      changePercent: ((row.c - row.o) / row.o) * 100,
+    }))
+    .sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent))
+    .slice(0, limit);
+}
+
+/** Normaliza una noticia de Massive conservando editorial y enlace verificable. */
+function normalizeNewsItem(item) {
+  if (!item || typeof item.title !== 'string') return null;
+  return {
+    title: item.title,
+    publisher: item.publisher?.name ?? null,
+    url: item.article_url ?? null,
+    publishedAt: item.published_utc ?? null,
+    tickers: Array.isArray(item.tickers) ? item.tickers.slice(0, 10) : [],
+    description: typeof item.description === 'string' ? item.description.slice(0, 400) : null,
+  };
+}
+
 /** Resumen de una ventana: null si no hay barras, nunca un cero inventado. */
 function summarizeWindow(bars, referenceClose) {
   if (!bars.length) return null;
@@ -209,12 +266,19 @@ function createMassiveClient(config = {}) {
     const previous = splitSessions(response.data, previousSessionDateIso);
     const current = splitSessions(response.data, currentSessionDateIso);
     const previousClose = previous.regular.length ? previous.regular[previous.regular.length - 1].c : null;
+    // Variación de la sesión regular anterior, calculada con las barras que ya se
+    // trajeron: no cuesta una llamada extra del plan.
+    const previousRegularOpen = previous.regular.length ? previous.regular[0].o : null;
+    const previousRegularChangePercent = Number.isFinite(previousRegularOpen) && previousRegularOpen > 0 && Number.isFinite(previousClose)
+      ? ((previousClose - previousRegularOpen) / previousRegularOpen) * 100
+      : null;
 
     return {
       ticker: String(ticker).toUpperCase(),
       previousSessionDate: previousSessionDateIso,
       currentSessionDate: currentSessionDateIso,
       previousClose,
+      previousRegularChangePercent,
       afterHours: summarizeWindow(previous.afterHours, previousClose),
       premarket: summarizeWindow(current.premarket, previousClose),
       retrievedAt: response.retrievedAt,
@@ -223,7 +287,76 @@ function createMassiveClient(config = {}) {
     };
   }
 
-  return { version: MASSIVE_CLIENT_VERSION, minuteBars, extendedHoursSnapshot };
+  /** Barras diarias de todo el mercado de EE. UU. en una sola llamada. */
+  async function groupedDaily(dateIso) {
+    const url = `${baseUrl}/v2/aggs/grouped/locale/us/market/stocks/${dateIso}?adjusted=true`;
+    const response = await getJson(url);
+    if (!response.ok) return response;
+    const results = Array.isArray(response.data?.results) ? response.data.results : [];
+    return { ok: true, data: results, retrievedAt: response.retrievedAt, source: url };
+  }
+
+  /**
+   * Noticias con licencia, editorial identificado y enlace al artículo original.
+   * Sustituye legalmente a raspar Reuters o Investing.com, que además de violar sus
+   * términos se rompería cada vez que cambien el HTML.
+   */
+  async function news(ticker, limit = 5) {
+    const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(50, limit))) });
+    if (ticker) {
+      const symbol = String(ticker).trim().toUpperCase();
+      if (!/^[A-Z][A-Z.\-]{0,9}$/.test(symbol))
+        return { ok: false, reason: 'INVALID_TICKER', detail: `Ticker inválido: ${ticker}`, source: baseUrl };
+      params.set('ticker', symbol);
+    }
+    const url = `${baseUrl}/v2/reference/news?${params.toString()}`;
+    const response = await getJson(url);
+    if (!response.ok) return response;
+    const items = (Array.isArray(response.data?.results) ? response.data.results : [])
+      .map(normalizeNewsItem).filter(Boolean);
+    return { ok: true, data: items, retrievedAt: response.retrievedAt, source: url };
+  }
+
+  /** Estado del mercado ahora mismo: abierto, cerrado o en horario extendido. */
+  async function marketStatus() {
+    const response = await getJson(`${baseUrl}/v1/marketstatus/now`);
+    if (!response.ok) return response;
+    return {
+      ok: true,
+      data: {
+        market: response.data?.market ?? null,
+        earlyHours: response.data?.earlyHours === true,
+        afterHours: response.data?.afterHours === true,
+        serverTime: response.data?.serverTime ?? null,
+      },
+      retrievedAt: response.retrievedAt,
+      source: response.source,
+    };
+  }
+
+  /** Próximos feriados y cierres anticipados del mercado. */
+  async function upcomingMarketHolidays() {
+    const response = await getJson(`${baseUrl}/v1/marketstatus/upcoming`);
+    if (!response.ok) return response;
+    // Massive devuelve una entrada por bolsa (NYSE, NASDAQ...), así que el mismo
+    // feriado llega repetido. Se deduplica por fecha y motivo.
+    const seen = new Set();
+    const items = (Array.isArray(response.data) ? response.data : [])
+      .filter(item => item && item.date)
+      .filter(item => {
+        const fingerprint = `${item.date}|${item.name ?? ''}`;
+        if (seen.has(fingerprint)) return false;
+        seen.add(fingerprint);
+        return true;
+      })
+      .map(item => ({ date: item.date, name: item.name ?? null, status: item.status ?? null }));
+    return { ok: true, data: items, retrievedAt: response.retrievedAt, source: response.source };
+  }
+
+  return {
+    version: MASSIVE_CLIENT_VERSION,
+    minuteBars, extendedHoursSnapshot, groupedDaily, news, marketStatus, upcomingMarketHolidays,
+  };
 }
 
 module.exports = {
@@ -236,5 +369,7 @@ module.exports = {
   sessionWindowsForDate,
   splitSessions,
   summarizeWindow,
+  selectAdaptiveUniverse,
+  normalizeNewsItem,
   createMassiveClient,
 };

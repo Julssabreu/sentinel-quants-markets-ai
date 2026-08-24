@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createMassiveClient, newYorkTimeToUtcMs, sessionWindowsForDate, splitSessions, summarizeWindow,
-  lastTwoSessionDates,
+  lastTwoSessionDates, selectAdaptiveUniverse, normalizeNewsItem,
   // @ts-expect-error CommonJS shared production module
 } from '../shared/massiveClient.cjs';
 
@@ -210,5 +210,120 @@ describe('lastTwoSessionDates — fin de semana y lunes', () => {
         expect(weekday).toBeLessThan(6);
       }
     }
+  });
+});
+
+describe('selectAdaptiveUniverse', () => {
+  const row = (T: string, o: number, c: number, v: number) => ({ T, o, c, v });
+
+  it('excluye acciones de centavos aunque se muevan mucho', () => {
+    const universe = selectAdaptiveUniverse([
+      row('PENNY', 1, 2, 500_000_000),   // +100% pero a US$2
+      row('REAL', 100, 105, 1_000_000),  // +5% a US$100
+    ], { minPrice: 5, minDollarVolume: 1_000_000 });
+    expect(universe.map((u: {ticker:string}) => u.ticker)).toEqual(['REAL']);
+  });
+
+  it('excluye lo que no tiene liquidez suficiente', () => {
+    // Un +40% con US$20.000 negociados no es señal de mercado, es ruido con spread.
+    const universe = selectAdaptiveUniverse([
+      row('ILIQUIDO', 100, 140, 200),       // US$28.000 de volumen
+      row('LIQUIDO', 100, 102, 1_000_000),  // US$102M
+    ], { minDollarVolume: 50_000_000 });
+    expect(universe.map((u: {ticker:string}) => u.ticker)).toEqual(['LIQUIDO']);
+  });
+
+  it('ordena por movimiento absoluto: una caída fuerte importa tanto como una subida', () => {
+    const universe = selectAdaptiveUniverse([
+      row('SUBE', 100, 103, 1_000_000),
+      row('CAE', 100, 92, 1_000_000),
+      row('PLANO', 100, 100.5, 1_000_000),
+    ], { minDollarVolume: 1_000_000 });
+    expect(universe.map((u: {ticker:string}) => u.ticker)).toEqual(['CAE', 'SUBE', 'PLANO']);
+  });
+
+  it('calcula la variación contra la apertura del día', () => {
+    const universe = selectAdaptiveUniverse([row('AAA', 100, 110, 1_000_000)], { minDollarVolume: 1 });
+    expect(universe[0].changePercent).toBeCloseTo(10, 10);
+    expect(universe[0].dollarVolume).toBe(110_000_000);
+  });
+
+  it('respeta el límite y la lista de exclusión', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => row(`T${i}`, 100, 100 + i, 1_000_000));
+    expect(selectAdaptiveUniverse(rows, { minDollarVolume: 1, limit: 5 })).toHaveLength(5);
+    const withoutTop = selectAdaptiveUniverse(rows, { minDollarVolume: 1, limit: 3, exclude: ['T29'] });
+    expect(withoutTop.map((u: {ticker:string}) => u.ticker)).not.toContain('T29');
+  });
+
+  it('ignora filas corruptas sin romperse', () => {
+    const universe = selectAdaptiveUniverse([
+      null, {}, { T: 'X' }, row('OK', 100, 105, 1_000_000),
+    ] as never[], { minDollarVolume: 1 });
+    expect(universe.map((u: {ticker:string}) => u.ticker)).toEqual(['OK']);
+  });
+});
+
+describe('normalizeNewsItem', () => {
+  it('conserva editorial y enlace para que la noticia sea verificable', () => {
+    const item = normalizeNewsItem({
+      title: 'Apple sube tras resultados',
+      publisher: { name: 'The Motley Fool' },
+      article_url: 'https://example.com/a',
+      published_utc: '2026-08-21T12:00:00Z',
+      tickers: ['AAPL'],
+      description: 'Resumen',
+    });
+    expect(item).toMatchObject({
+      title: 'Apple sube tras resultados',
+      publisher: 'The Motley Fool',
+      url: 'https://example.com/a',
+    });
+  });
+
+  it('descarta una entrada sin título en vez de propagar basura', () => {
+    expect(normalizeNewsItem({})).toBeNull();
+    expect(normalizeNewsItem(null)).toBeNull();
+  });
+});
+
+describe('correcciones de calidad detectadas en el informe real', () => {
+  it('el umbral de liquidez por defecto descarta microcaps volátiles', () => {
+    // Calibrado contra el mercado real del 2026-08-21: con el umbral anterior el
+    // ranking se llenaba de nombres como SDOT (+60%) con apenas US$260M negociados.
+    const universe = selectAdaptiveUniverse([
+      { T: 'MICRO', o: 8, c: 13, v: 20_000_000 },      // +62% pero US$260M
+      { T: 'LIQUIDO', o: 100, c: 106, v: 20_000_000 }, // +6% con US$2.120M
+    ]);
+    expect(universe.map((u: {ticker:string}) => u.ticker)).toEqual(['LIQUIDO']);
+  });
+
+  it('calcula la variación de la sesión regular anterior sin llamadas extra', async () => {
+    const okResponse = (results: unknown[]) => ({ ok: true, status: 200, json: async () => ({ status: 'OK', results }) }) as unknown as Response;
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return okResponse([
+        bar('2026-08-20T13:30:00Z', 100, { o: 100 }), // apertura regular
+        bar('2026-08-20T19:59:00Z', 105),             // cierre regular
+      ]);
+    }) as unknown as typeof fetch;
+    const client = createMassiveClient({ apiKey: 'k', fetchImpl, minIntervalMs: 0 });
+    const snapshot = await client.extendedHoursSnapshot('AAPL', '2026-08-20', '2026-08-21');
+    expect(snapshot.previousRegularChangePercent).toBeCloseTo(5, 10);
+    expect(calls).toBe(1);
+  });
+
+  it('deduplica feriados repetidos por bolsa', async () => {
+    const fetchImpl = (async () => ({
+      ok: true, status: 200, json: async () => ([
+        { date: '2026-09-07', name: 'Labor Day', status: 'closed', exchange: 'NYSE' },
+        { date: '2026-09-07', name: 'Labor Day', status: 'closed', exchange: 'NASDAQ' },
+        { date: '2026-11-26', name: 'Thanksgiving', status: 'closed', exchange: 'NYSE' },
+      ]),
+    })) as unknown as typeof fetch;
+    const client = createMassiveClient({ apiKey: 'k', fetchImpl, minIntervalMs: 0 });
+    const result = await client.upcomingMarketHolidays();
+    expect(result.data).toHaveLength(2);
+    expect(result.data.map((h: {name:string}) => h.name)).toEqual(['Labor Day', 'Thanksgiving']);
   });
 });

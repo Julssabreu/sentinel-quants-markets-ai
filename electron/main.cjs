@@ -17,7 +17,7 @@ const { createEvidenceLedger, stableJson } = require('../shared/evidenceLedger.c
 const { createPersistentLogger } = require('../shared/persistentLog.cjs');
 const { isTrustedIpcEvent } = require('../shared/ipcTrust.cjs');
 const { createSecEdgarClient, normalizeSecTicker } = require('../shared/secEdgarClient.cjs');
-const { createMassiveClient, lastTwoSessionDates } = require('../shared/massiveClient.cjs');
+const { createMassiveClient, lastTwoSessionDates, selectAdaptiveUniverse } = require('../shared/massiveClient.cjs');
 const { composeDailyReportText } = require('../shared/dailyReportComposer.cjs');
 const { buildDailyReportHtml } = require('../shared/dailyReportHtml.cjs');
 const { createDailyClockScheduler } = require('../shared/dailyClockScheduler.cjs');
@@ -305,7 +305,11 @@ ipcMain.handle('sec:company-snapshot',async(_event,ticker)=>fetchSecCompanySnaps
 // Informe diario: escáner + EDGAR + VWAP/opening range compuestos en texto y enviados
 // por WhatsApp a las 9:00 AST. República Dominicana no observa horario de verano, así
 // que la hora objetivo es siempre 13:00 UTC — ver shared/dailyClockScheduler.cjs.
-const DAILY_REPORT_UTC_HOUR=13,DAILY_REPORT_UTC_MINUTE=0,DAILY_REPORT_MAX_CANDIDATES=5,DAILY_REPORT_MAX_STOCK_DETAILS=3;
+const DAILY_REPORT_UTC_HOUR=13,DAILY_REPORT_UTC_MINUTE=0;
+/** Proxies de índice: son ETF, se consultan igual que una acción. */
+const DAILY_REPORT_INDEX_PROXIES=['SPY','QQQ','DIA','IWM'];
+/** Presupuesto de llamadas del plan gratuito: ver comentario en buildDailyReportAssets. */
+const DAILY_REPORT_MAX_MOVERS=8,DAILY_REPORT_MAX_CATALYSTS=4,DAILY_REPORT_MAX_PREVIEW=3;
 function dailyReportConfigPath(){return path.join(app.getPath('userData'),'sentinel-daily-report.json')}
 const defaultDailyReportConfig={schemaVersion:1,enabled:false};
 function normalizeDailyReportConfig(value={}){return{schemaVersion:1,enabled:value.enabled===true}}
@@ -326,62 +330,74 @@ async function writeDailyReportConfig(value){
   return normalized;
 }
 
-// Heurística de visualización, no un reemplazo de classifyMarket: solo decide qué
-// candidatos reciben EDGAR y sesión de mercado. Si un símbolo se clasifica distinto
-// aquí que en el resto de Sentinel, el peor caso es que no se le pidan datos extra —
-// nunca un dato equivocado.
-function inferReportMarket(candidate){
-  const path=String(candidate.path||'').toLowerCase();
-  if(path.includes('stock'))return'STOCK';
-  if(path.includes('forex')||path.includes('currenc'))return'FOREX';
-  if(path.includes('crypto'))return'CRYPTO';
-  if(path.includes('metal'))return'METAL';
-  if(path.includes('index')||path.includes('indices'))return'INDEX';
-  if(path.includes('future'))return'FUTURE';
-  return'CFD';
-}
-
 // Solo acciones de EE. UU.: el informe dejó de cubrir forex/cripto/CFD a pedido
 // explícito. El feed MT5 es de CFDs y solo entrega sesión regular — sin premercado ni
 // after-hours reales, así que esa franja se declara no disponible en vez de
 // aproximarla. Requiere decidir y conectar un bróker de horario extendido
 // (TradeStation o Interactive Brokers); mientras tanto extendedHoursSource.connected
 // se queda en false.
+/**
+ * Reúne todo lo que consume el informe. El universo de acciones ya no sale del escáner
+ * MT5: ese feed son CFDs, no acciones de EE. UU. Massive entrega el mercado completo
+ * (~12.500 símbolos) en una sola llamada, que es la fuente correcta para este informe.
+ *
+ * Presupuesto de llamadas con el plan gratuito (5 por minuto), en serie porque el
+ * cliente las espacia solo: 1 estado + 1 feriados + 1 mercado completo + 4 índices +
+ * 8 movers + 1 noticias ≈ 16 llamadas, unos 3,5 minutos. Aceptable para una tarea
+ * diaria; imposible si se intentara escanear los 12.500 símbolos uno a uno.
+ */
 async function buildDailyReportAssets(){
-  const [scan,macro,vix]=await Promise.all([
-    scanMt5Market(300,false),
+  const [macro,vix]=await Promise.all([
     loadMacroSnapshot().catch(()=>null),
     getTradingViewVixContext(false).catch(()=>null),
   ]);
-  const rawCandidates=scan?.ok?scan.candidates:[];
-  const stocks=rawCandidates
-    .filter(c=>inferReportMarket(c)==='STOCK')
-    .map(c=>({symbol:c.symbol,direction:c.direction,score:c.score,description:c.description||c.symbol}))
-    .sort((a,b)=>b.score-a.score)
-    .slice(0,DAILY_REPORT_MAX_CANDIDATES);
-  const catalysts=await Promise.all(
-    stocks.slice(0,DAILY_REPORT_MAX_STOCK_DETAILS).map(stock=>
-      fetchSecCompanySnapshot(stock.symbol).catch(cause=>({ticker:stock.symbol,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)}))
-    )
-  );
   const vixSummary=vix?.ok&&vix.snapshot?{value:vix.snapshot.value,observedAt:vix.snapshot.observedAt,source:'TradingView / Cloudflare'}:null;
-
-  // Horario extendido vía Massive. El símbolo del escáner viene con sufijo de plaza
-  // (AAPL.US); normalizeSecTicker ya resuelve esa traducción y distingue el sufijo de
-  // una clase de acción (BRK.B → BRK-B), así que se reutiliza en lugar de duplicarla.
   const now=new Date(),{previousSessionDate,currentSessionDate}=lastTwoSessionDates(now);
-  let extendedHours=[],extendedHoursSource={connected:false,brokerName:null};
+
+  let extendedHoursSource={connected:false,brokerName:null},
+      indices=[],movers=[],news=[],marketHolidays=[],marketStatus=null,catalysts=[];
+
   try{
     const client=await massiveClient();
     if(client){
       extendedHoursSource={connected:true,brokerName:'Massive'};
-      // En serie a propósito: el cliente espacia las llamadas para respetar el límite
-      // del plan; lanzarlas en paralelo solo provocaría 429.
-      for(const stock of stocks.slice(0,DAILY_REPORT_MAX_STOCK_DETAILS)){
-        const ticker=normalizeSecTicker(stock.symbol);
-        if(!ticker){extendedHours.push({ticker:stock.symbol,error:'Símbolo no traducible a ticker de EE. UU.',premarket:null,afterHours:null,previousClose:null});continue}
-        extendedHours.push(await client.extendedHoursSnapshot(ticker,previousSessionDate,currentSessionDate));
+
+      const status=await client.marketStatus();
+      if(status.ok)marketStatus=status.data;
+      const holidays=await client.upcomingMarketHolidays();
+      if(holidays.ok)marketHolidays=holidays.data;
+
+      // Índices de referencia: son ETF, así que se consultan como cualquier acción.
+      for(const ticker of DAILY_REPORT_INDEX_PROXIES){
+        const snapshot=await client.extendedHoursSnapshot(ticker,previousSessionDate,currentSessionDate);
+        indices.push({
+          ticker,
+          previousRegular:Number.isFinite(snapshot.previousClose)?{last:snapshot.previousClose,changePercent:snapshot.previousRegularChangePercent}:null,
+          premarket:snapshot.premarket,
+          afterHours:snapshot.afterHours,
+          error:snapshot.error,
+        });
       }
+
+      // Universo del día: mercado completo filtrado por liquidez y ordenado por
+      // movimiento absoluto. Excluye los propios índices para no duplicarlos.
+      const grouped=await client.groupedDaily(previousSessionDate);
+      const universe=grouped.ok
+        ? selectAdaptiveUniverse(grouped.data,{limit:DAILY_REPORT_MAX_MOVERS,exclude:DAILY_REPORT_INDEX_PROXIES})
+        : [];
+      for(const candidate of universe){
+        movers.push(await client.extendedHoursSnapshot(candidate.ticker,previousSessionDate,currentSessionDate));
+      }
+
+      const newsResponse=await client.news(undefined,10);
+      if(newsResponse.ok)news=newsResponse.data;
+
+      // EDGAR es una API distinta, con su propio límite: no compite por el de Massive.
+      catalysts=await Promise.all(
+        movers.slice(0,DAILY_REPORT_MAX_CATALYSTS).map(mover=>
+          fetchSecCompanySnapshot(mover.ticker).catch(cause=>({ticker:mover.ticker,companyName:null,filings:[],latestRevenue:null,retrievedAt:null,error:cause instanceof Error?cause.message:String(cause)}))
+        )
+      );
     }
   }catch(cause){
     extendedHoursSource={connected:false,brokerName:null,error:cause instanceof Error?cause.message:String(cause)};
@@ -390,8 +406,8 @@ async function buildDailyReportAssets(){
   return{
     generatedAtIso:now.toISOString(),
     previousSessionDate,currentSessionDate,
-    extendedHoursSource,extendedHours,
-    stocks,catalysts,vix:vixSummary,macro,
+    extendedHoursSource,indices,movers,news,catalysts,marketHolidays,marketStatus,
+    vix:vixSummary,macro,
   };
 }
 
@@ -413,8 +429,17 @@ async function renderReportPdf(html){
 
 async function buildDailyReport(){
   const assets=await buildDailyReportAssets();
-  const candidates=assets.stocks.map(stock=>({...stock,market:'STOCK'}));
-  const text=composeDailyReportText({generatedAtIso:assets.generatedAtIso,candidates,maxCandidates:DAILY_REPORT_MAX_CANDIDATES});
+  // La vista previa de WhatsApp lista los movimientos más marcados del premercado.
+  const candidates=assets.movers
+    .filter(mover=>mover.premarket)
+    .sort((a,b)=>Math.abs(b.premarket.changePercent??0)-Math.abs(a.premarket.changePercent??0))
+    .map(mover=>({
+      symbol:mover.ticker,market:'STOCK',
+      direction:(mover.premarket.changePercent??0)>=0?'BUY':'SELL',
+      score:Number((mover.premarket.changePercent??0).toFixed(2)),
+      description:'premercado',
+    }));
+  const text=composeDailyReportText({generatedAtIso:assets.generatedAtIso,candidates,maxCandidates:DAILY_REPORT_MAX_PREVIEW});
   const html=buildDailyReportHtml(assets);
   const pdfPath=await renderReportPdf(html);
   return{text,pdfPath};
